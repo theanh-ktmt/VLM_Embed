@@ -12,6 +12,7 @@ import numpy as np
 from src.utils import print_master
 
 from src.model.vlm_backbone.llava_next import LlavaNextForConditionalGeneration
+from src.model.vlm_backbone.llava_onevision import LlavaOnevisionForConditionalGeneration
 from src.model.vlm_backbone.phi3_v.modeling_phi3_v import Phi3VForCausalLM
 from src.model.vlm_backbone.qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
 from src.model.vlm_backbone.qwen2_vl import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
@@ -30,9 +31,11 @@ from peft import PeftConfig
 
 PHI_IMAGE_TOKEN_MAX_INPUT_ID = int(1e9)
 LLAVA_IMAGE_TOKEN_ID = 32000
+LLAVA_ONEVISION_IMAGE_TOKEN_ID = 151646
 
 PHI3V = 'phi3_v'
 LLAVA_NEXT = 'llava_next'
+LLAVA_ONEVISION = 'llava_onevision'
 QWEN2_VL = 'qwen2_vl'
 QWEN2_VL_TOKENSELECTION = 'qwen2_vl'
 QWEN2_5_VL = 'qwen2_5_vl'
@@ -46,6 +49,7 @@ COLPALI = 'colpali'  # PaliGemma-3B
 MODEL2BACKBONE = {  # keys are from hf_config.model_type or manually added if not provided
     'phi3_v': PHI3V,
     'llava_next': LLAVA_NEXT,
+    'llava_onevision': LLAVA_ONEVISION,
     'internvl_chat': INTERN_VL3,
     'qwen2_vl': QWEN2_VL,
     'qwen2_vl_tokenselection': QWEN2_VL,
@@ -62,6 +66,7 @@ SUPPORTED_MODELS = set(MODEL2BACKBONE.keys())
 VLM_IMAGE_TOKENS = {
     PHI3V: "<|image_1|>",
     LLAVA_NEXT: "<image>",
+    LLAVA_ONEVISION: "<image>",
     INTERN_VL3: "<image>",
     QWEN2_VL: "<|image_pad|>",
     QWEN2_5_VL: "<|image_pad|>",
@@ -75,6 +80,7 @@ VLM_IMAGE_TOKENS = {
 
 VLM_VIDEO_TOKENS = {
     LLAVA_NEXT: "<image>",
+    LLAVA_ONEVISION: "<video>",
     INTERN_VL3: "<image>",
     QWEN2_VL: "<|video_pad|>",
     QWEN2_5_VL: "<|video_pad|>",
@@ -88,6 +94,7 @@ VLM_VIDEO_TOKENS = {
 backbone2model = {
     PHI3V: Phi3VForCausalLM,
     LLAVA_NEXT: LlavaNextForConditionalGeneration,
+    LLAVA_ONEVISION: LlavaOnevisionForConditionalGeneration,
     INTERN_VL3: AutoModel,
     QWEN2_VL: Qwen2VLForConditionalGeneration,
     QWEN2_5_VL: Qwen2_5_VLForConditionalGeneration,
@@ -115,6 +122,12 @@ def load_processor(model_args, data_args=None):
     elif model_args.model_backbone == LLAVA_NEXT:
         from src.model.vlm_backbone.llava_next.processing_llava_next import LlavaNextProcessor
         processor = LlavaNextProcessor.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=True
+        )
+    elif model_args.model_backbone == LLAVA_ONEVISION:
+        from src.model.vlm_backbone.llava_onevision.processing_llava_onevision import LlavaOnevisionProcessor
+        processor = LlavaOnevisionProcessor.from_pretrained(
             model_name_or_path,
             trust_remote_code=True
         )
@@ -267,6 +280,47 @@ def Llava_NEXT_process_fn(model_inputs: dict, processor, max_length=None):
         # 'images': visual_inputs,
     }
 
+    return inputs
+
+def Llava_ONEVISION_process_fn(model_inputs: dict, processor, max_length=None):
+    input_ids, pixel_values, image_sizes = [], [], []
+    texts, images = model_inputs['text'], model_inputs['images']
+    image_exists = False
+    vlm_image_token = VLM_IMAGE_TOKENS[LLAVA_ONEVISION]
+    # 1. iterate each pair and process (since processors do not support batch processing)
+    for text, image in zip(texts, images):
+        if image is None or (type(image)==list and (any(i is None for i in image))):
+            ## all image must be valid
+            inputs = processor(images=None, text=[text], return_tensors="np", max_length=max_length, truncation=True)
+            input_id = inputs["input_ids"].squeeze().tolist()
+            if isinstance(input_id, int):
+                # in case of empty string, only BOS is included
+                input_id = [input_id]
+            input_ids.append(input_id)
+            pixel_values.append(None)
+            image_sizes.append(None)
+        else:
+            image_exists = True
+            inputs = processor(images=image, text=[text], return_tensors="np", max_length=max_length, truncation=True)
+            input_ids.append(inputs["input_ids"].squeeze().tolist())
+            pixel_values.append(inputs['pixel_values'])
+            image_sizes.append(inputs['image_sizes'])
+            
+    # 2. padding inputs
+    batch_encoding = processor.tokenizer.pad({'input_ids': input_ids}, return_tensors="pt")
+    input_ids, attention_mask = batch_encoding['input_ids'], batch_encoding['attention_mask']
+    inputs = {
+        'input_ids': input_ids.long(),
+        'attention_mask': attention_mask.long(),
+        'texts': texts,
+        'images': images,
+    }
+    if image_exists:
+        inputs['pixel_values'] = pixel_values
+        inputs['image_sizes'] = image_sizes
+    else:
+        inputs['pixel_values'] = torch.zeros(input_ids.shape[0], 1)
+        inputs['image_sizes'] = torch.ones(input_ids.shape[0], 1)
     return inputs
 
 
