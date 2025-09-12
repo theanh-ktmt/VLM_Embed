@@ -38,7 +38,6 @@ from transformers.image_utils import (
     OPENAI_CLIP_MEAN,
     OPENAI_CLIP_STD,
     ChannelDimension,
-    VideoInput,
     ImageInput,
     PILImageResampling,
     get_image_size,
@@ -50,6 +49,7 @@ from transformers.image_utils import (
     valid_images,
     validate_preprocess_arguments,
 )
+from transformers.video_processing_utils import VideoInput
 from transformers.utils import TensorType, is_vision_available, logging
 from ...utils import UnionFind
 

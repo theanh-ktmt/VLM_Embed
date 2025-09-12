@@ -133,8 +133,10 @@ def load_processor(model_args, data_args=None):
         )
     elif model_args.model_backbone in [QWEN2_VL, GME, LamRA]:
         from src.model.vlm_backbone.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
-        from src.model.vlm_backbone.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
-        from src.model.vlm_backbone.qwen2_vl.tokenization_qwen2_fast import Qwen2TokenizerFast
+        # from src.model.vlm_backbone.qwen2_vl.image_processing_qwen2_vl import Qwen2VLImageProcessor
+        from transformers import Qwen2VLImageProcessor
+        # from src.model.vlm_backbone.qwen2_vl.tokenization_qwen2_fast import Qwen2TokenizerFast
+        from transformers import Qwen2TokenizerFast
 
         model_name_or_path = PeftConfig.from_pretrained(model_args.model_name).base_model_name_or_path if(model_args.init_lora_model) else model_name_or_path
         print(f">>>>>>>>>>>>>>>>>>>>>>>> Processor {model_name_or_path}")
@@ -311,7 +313,7 @@ def Llava_ONEVISION_process_fn(model_inputs: dict, processor, max_length=None):
         max_length=max_length,
         truncation=False,
         padding=True,
-        input_data_format=ChannelDimension.FIRST,  # giữ format chuẩn (H, W, C)
+        input_data_format=ChannelDimension.LAST,  # giữ format chuẩn (H, W, C)
     )
 
     # Chuẩn hoá image_sizes: đảm bảo [height, width]
