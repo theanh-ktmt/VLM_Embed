@@ -12,7 +12,6 @@ from src.model.processor import PHI3V, VLM_IMAGE_TOKENS, INTERN_VL3
 from src.utils import print_master, print_rank
 from torch.utils.data import Dataset
 
-from torch.utils.data import Dataset
 import torch
 import logging
 from dataclasses import dataclass
@@ -20,11 +19,6 @@ import torch.distributed as dist
 from typing import Iterator, List, Tuple, Union
 
 logger = logging.getLogger(__name__)
-
-
-
-
-
 
 def process_image(image, resolution, max_dim=1344):
     if image is None:
@@ -210,7 +204,7 @@ class TrainTextImageDataset(Dataset):
             return image
 
     def __getitem__(self, data_idx) -> Tuple[str, List[str]]:
-        print(f">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>get image called, {idx}", flush=True)
+        print(f">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>get image called, {data_idx}", flush=True)
         qry_texts, qry_image_paths, pos_texts, pos_image_paths = (
             self.train_data[data_idx]["qry"], self.train_data[data_idx]["qry_image_path"],
             self.train_data[data_idx]["pos_text"], self.train_data[data_idx]["pos_image_path"]
@@ -324,24 +318,49 @@ class EvalDataset(Dataset):
         """
         (text_field, image_field) -> ("qry_text", "qry_img_path") or ("tgt_text", "tgt_img_path")
         """
-        unique_pair = set()
+        # unique_pair = set()
+        # for row in self.eval_data:
+        #     if isinstance(row[text_field], str):
+        #         if row[text_field]:
+        #             unique_pair.add((row[text_field], row[img_path_field]))
+        #         else:
+        #             if isinstance(row[img_path_field], List):
+        #                 for img_path in row[img_path_field]:
+        #                     unique_pair.add((row[text_field], img_path))
+        #             else:
+        #                 unique_pair.add((row[text_field], row[img_path_field]))
+        #     elif type(row[text_field]) == list:
+        #         assert type(row[img_path_field]) == list and len(row[img_path_field]) == len(row[text_field])
+        #         for text, img_path in zip(row[text_field], row[img_path_field]):
+        #             unique_pair.add((text, img_path))
+
+        # paired_data = [{"text": text, "img_path": img_path} for text, img_path in unique_pair]
+        # paired_data = sorted(paired_data, key=lambda k:k['img_path'])
+        # return paired_data
+        
+        # Get from VLM2Vec repo 
+        unique_set = set()
+        unique_pairs = []  # to preserve the original order
         for row in self.eval_data:
             if isinstance(row[text_field], str):
                 if row[text_field]:
-                    unique_pair.add((row[text_field], row[img_path_field]))
+                    if (row[text_field], row[img_path_field]) not in unique_set:
+                        unique_pairs.append((row[text_field], row[img_path_field]))
+                        unique_set.add((row[text_field], row[img_path_field]))
                 else:
                     if isinstance(row[img_path_field], List):
                         for img_path in row[img_path_field]:
-                            unique_pair.add((row[text_field], img_path))
+                            unique_pairs.append((row[text_field], img_path))
                     else:
-                        unique_pair.add((row[text_field], row[img_path_field]))
+                        unique_pairs.append((row[text_field], row[img_path_field]))
             elif type(row[text_field]) == list:
                 assert type(row[img_path_field]) == list and len(row[img_path_field]) == len(row[text_field])
                 for text, img_path in zip(row[text_field], row[img_path_field]):
-                    unique_pair.add((text, img_path))
+                    if (text, img_path) not in unique_set:
+                        unique_pairs.append((text, img_path))
+                        unique_set.add((text, img_path))
 
-        paired_data = [{"text": text, "img_path": img_path} for text, img_path in unique_pair]
-        paired_data = sorted(paired_data, key=lambda k:k['img_path'])
+        paired_data = [{"text": text, "img_path": img_path} for text, img_path in unique_pairs]
         return paired_data
 
 

@@ -1,6 +1,7 @@
 import sys
 
 from datasets import load_dataset
+import datasets
 from src.utils import print_rank
 
 
@@ -47,3 +48,16 @@ def load_hf_dataset(hf_path):
         return load_dataset(repo, split=split)
     else:
         return load_dataset(repo)
+
+def load_hf_dataset_multiple_subset(hf_path, subset_names):
+    """
+    Load and concatenate multiple subsets from a Hugging Face dataset.
+    """
+    repo, _, split = hf_path
+    subsets = []
+    for subset_name in subset_names:
+        dataset = load_dataset(repo, subset_name, split=split)
+        new_column = [subset_name] * len(dataset)
+        dataset = dataset.add_column("subset", new_column)
+        subsets.append(dataset)
+    dataset = datasets.concatenate_datasets(subsets)

@@ -99,7 +99,13 @@ class MMEBModel(nn.Module):
             hidden_states = hidden_states.hidden_states[-1]
             pooled_output = self._pooling(hidden_states, input['attention_mask'])
             return pooled_output
-
+        elif getattr(self, "model_backbone", None) in [LLAVA_NEXT, LLAVA_ONEVISION]:
+            input['pixel_values'] = input['pixel_values'].squeeze(1)
+            input['image_sizes'] = input['image_sizes'].squeeze(1)
+            hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True)
+            hidden_states = hidden_states.hidden_states[-1]
+            pooled_output = self._pooling(hidden_states, input['attention_mask'])
+            return pooled_output
         else:
             # import ipdb; ipdb.set_trace()
             hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True)

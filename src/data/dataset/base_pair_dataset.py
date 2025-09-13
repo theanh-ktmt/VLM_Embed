@@ -93,8 +93,8 @@ def add_metainfo_hook(f):
         # append common metadata
         batch_size = len(batch_data['query_text'])
         global_dataset_name = kwargs.get("global_dataset_name", "None")
-        # batch_data['global_dataset_name'] = [global_dataset_name] * batch_size
-        batch_data['global_dataset_name'] = global_dataset_name
+        batch_data['global_dataset_name'] = [global_dataset_name] * batch_size
+        # batch_data['global_dataset_name'] = global_dataset_name
         return batch_data
 
     return wrapper
