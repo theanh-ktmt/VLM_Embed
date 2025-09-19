@@ -1,3 +1,15 @@
+wget https://huggingface.co/datasets/TIGER-Lab/MMEB-train/resolve/main/images_zip/N24News.zip
+unzip N24News.zip -d ./vlm2vec_train/MMEB-train/image/
+rm N24News.zip
+
+wget https://huggingface.co/datasets/TIGER-Lab/MMEB-train/resolve/main/images_zip/NIGHTS.zip
+unzip NIGHTS.zip -d ./vlm2vec_train/MMEB-train/image/
+rm NIGHTS.zip
+
+wget https://huggingface.co/datasets/TIGER-Lab/MMEB-train/resolve/main/images_zip/OK-VQA.zip
+unzip OK-VQA.zip -d ./vlm2vec_train/MMEB-train/image/
+rm OK-VQA.zip
+
 wget https://huggingface.co/datasets/TIGER-Lab/MMEB-train/resolve/main/images_zip/SUN397.zip
 unzip SUN397.zip -d ./vlm2vec_train/MMEB-train/image/
 rm SUN397.zip

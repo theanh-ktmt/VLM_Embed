@@ -6,7 +6,6 @@ from src.utils import print_rank, print_master
 import time 
 import os
 import sys
-from tqdm import tqdm
 
 import torch
 import torch.nn as nn 
@@ -79,19 +78,12 @@ def finetune(
     distiller.student, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         distiller.student, optimizer, train_dataloader, lr_scheduler
     )
-    
     distiller.teacher.to(accelerator.device)
-    for param in distiller.teacher.encoder.parameters():
+    for param in distiller.teacher.parameters():
         param.requires_grad = False
-    distiller.teacher.encoder.eval()
-    distiller.student.encoder.train()
-    trainable_params = sum(p.numel() for p in distiller.student.encoder.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in distiller.student.encoder.parameters())
-
-    print_rank(f"Student encoder trainable parameters: {trainable_params} / {total_params}")
-    trainable_teacher_params = sum(p.numel() for p in distiller.teacher.encoder.parameters() if p.requires_grad)
-    total_teacher_params = sum(p.numel() for p in distiller.teacher.encoder.parameters())
-    print_rank(f"Teacher encoder trainable parameters: {trainable_teacher_params} / {total_teacher_params}")
+    distiller.teacher.eval()
+    distiller.student.train()
+    
     if training_args.report_to == "wandb" and accelerator.is_main_process:
         wandb.init(
             project="vlm_distillation", 
@@ -103,6 +95,8 @@ def finetune(
                 "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
             }
         )
+    
+    
     
     step = 0
     logging_output = {
@@ -121,84 +115,79 @@ def finetune(
         end_epoch = False
         epoch_step = 0
         epoch_loss, epoch_contrastive_loss, epoch_kd_loss = 0, 0, 0
-        for batch in tqdm(train_dataloader, desc=f"Epoch {epoch+1}"):
-            # global_batch = []
-            # global_st_time = time.time() 
-            # losses, contrastive_losses, kd_losses = [], [], []
-            # for i in range(training_args.gradient_accumulation_steps):
-            #     try:
-            #         batch = next(train_iter)
-            #         global_batch.append(batch)
-            #     except StopIteration:
-            #         end_epoch = True
-            #         break
+        train_iter = iter(train_dataloader)
+        
+        while True:
+            global_batch = []
+            global_st_time = time.time() 
+            losses, contrastive_losses, kd_losses = [], [], []
+            for i in range(training_args.gradient_accumulation_steps):
+                try:
+                    batch = next(train_iter)
+                    global_batch.append(batch)
+                except StopIteration:
+                    end_epoch = True
+                    break
             
-            # if end_epoch:
-            #     break
+            if end_epoch:
+                break
             
-            # for batch in global_batch:
-            with accelerator.accumulate(distiller.student):
+            for batch in global_batch:
                 st_time = time.time()
                 student_inputs = batch['student_inputs']
                 teacher_inputs = batch['teacher_inputs']
+                with accelerator.accumulate(distiller.student):
+                    loss_dict = distiller(student_inputs['qry'], student_inputs['pos'], teacher_inputs['qry'], teacher_inputs['pos'])
                 
-                loss_dict = distiller(student_inputs['qry'], student_inputs['pos'], teacher_inputs['qry'], teacher_inputs['pos'])
-            
-                loss = loss_dict['loss'] / training_args.gradient_accumulation_steps
-                accelerator.backward(loss)
-                contrastive_loss = loss_dict['contrastive_loss']
-                kd_loss = loss_dict['kd_loss']
-                
-                # losses.append(loss_dict['loss'].item())
-                # contrastive_losses.append(contrastive_loss.item())
-                # kd_losses.append(kd_loss.item())
-                batch_loss = loss_dict['loss'].detach().item()
-                batch_contrastive_loss = contrastive_loss.detach().item()
-                batch_kd_loss = kd_loss.detach().item()
-            epoch_loss += batch_loss
-            epoch_contrastive_loss += batch_contrastive_loss
-            epoch_kd_loss += batch_kd_loss
-                # logging_output['micro_step_time'].append(time.time() - st_time)
+                    loss = loss_dict['loss'] / training_args.gradient_accumulation_steps
+                    accelerator.backward(loss)
+                    contrastive_loss = loss_dict['contrastive_loss']
+                    kd_loss = loss_dict['kd_loss']
+                    
+                    losses.append(loss_dict['loss'].item())
+                    contrastive_losses.append(contrastive_loss.item())
+                    kd_losses.append(kd_loss.item())
+                    logging_output['micro_step_time'].append(time.time() - st_time)
                 
             if accelerator.sync_gradients:
-                print("OOptimizer here")
                 if training_args.max_grad_norm is not None and training_args.max_grad_norm > 0:
-                    accelerator.clip_grad_norm_(distiller.student.encoder.parameters(), training_args.max_grad_norm)
+                    accelerator.clip_grad_norm_(distiller.student.parameters(), training_args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
             
+            step += 1
             epoch_step += 1
-            # epoch_step += 1
-            # logging_output['global_step'] = step
-            # if torch.cuda.is_available():
-            #     torch.cuda.synchronize()
+            logging_output['global_step'] = step
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
             
-            # batch_loss = sum(losses)/len(losses)
-            # batch_contrastive_loss = sum(contrastive_losses)/len(contrastive_losses)
-            # batch_kd_loss = sum(kd_losses)/len(kd_losses)
+            batch_loss = sum(losses)/len(losses)
+            batch_contrastive_loss = sum(contrastive_losses)/len(contrastive_losses)
+            batch_kd_loss = sum(kd_losses)/len(kd_losses)
             
-            # epoch_loss += sum(losses)
-            # epoch_contrastive_loss += sum(contrastive_losses)
-            # epoch_kd_loss += sum(kd_losses)
-
-            logging_output['loss'].append(epoch_loss/epoch_step)
-            logging_output['contrastive_loss'].append(epoch_contrastive_loss/epoch_step)
-            logging_output['kd_loss'].append(epoch_kd_loss/epoch_step)
-            logging_output['step_time'].append(time.time() - st_time)
-
-            if accelerator.is_main_process and epoch_step % training_args.logging_steps == 0:
-                # avg_micro_step_time = sum(logging_output['micro_step_time'])/len(logging_output['micro_step_time'])
+            epoch_loss += sum(losses)
+            epoch_contrastive_loss += sum(contrastive_losses)
+            epoch_kd_loss += sum(kd_losses)
+            
+            logging_output['loss'].append(batch_loss)
+            logging_output['contrastive_loss'].append(batch_contrastive_loss)
+            logging_output['kd_loss'].append(batch_kd_loss)
+            logging_output['step_time'].append(time.time() - global_st_time)
+            
+            if accelerator.is_main_process and step % training_args.logging_steps == 0:
+                avg_micro_step_time = sum(logging_output['micro_step_time'])/len(logging_output['micro_step_time'])
                 avg_step_time = sum(logging_output['step_time'])/len(logging_output['step_time'])
                 
                 total_step = len(train_dataloader) // training_args.gradient_accumulation_steps * training_args.num_train_epochs
-                remaining_steps = total_step - epoch_step
+                remaining_steps = total_step - step
                 eta_seconds = remaining_steps * avg_step_time
                 eta_hours = eta_seconds / 3600
                 print_master(
-                    f"Epoch {epoch + 1} | Step {epoch_step} | "
-                    f"Loss: {epoch_loss/epoch_step:.4f} | Contrastive Loss: {epoch_contrastive_loss/epoch_step:.4f} | KD Loss: {epoch_kd_loss/epoch_step:.4f} | "
+                    f"Epoch {epoch + 1} | Step {step} | "
+                    f"Loss: {batch_loss:.4f} | Contrastive Loss: {batch_contrastive_loss:.4f} | KD Loss: {batch_kd_loss:.4f} | "
                     f"LR: {optimizer.param_groups[0]['lr']:.6f} | "
+                    f"Micro Step Time: {avg_micro_step_time:.4f}s | "
                     f"Step Time: {avg_step_time:.4f}s | "
                     f"ETA: {eta_hours:.2f}h"
                 )
@@ -209,7 +198,7 @@ def finetune(
                         "train/contrastive_loss": batch_contrastive_loss,
                         "train/kd_loss": batch_kd_loss,
                         "train/lr": optimizer.param_groups[0]['lr'],
-                        # "train/micro_step_time": avg_micro_step_time,
+                        "train/micro_step_time": avg_micro_step_time,
                         "train/step_time": avg_step_time,
                         "train/epoch": epoch + 1,
                         "train/global_step": step,
@@ -243,27 +232,29 @@ def finetune(
                 
                 if hasattr(unwarpped_student, 'peft_config'):
                     unwarpped_student.peft_config.save_pretrained(ckpt_dir)
-                    save_file(
-                        unwarpped_student.state_dict(),
-                        os.path.join(ckpt_dir, "adapter_model.safetensors")
-                    )
+                    unwarpped_student.save_pretrained(ckpt_dir)
+                    # save_file(
+                    #     unwarpped_student.state_dict(),
+                    #     os.path.join(ckpt_dir, "adapter_model.safetensors")
+                    # )
                     print_rank("Saved LoRA adapter model.")
                 else:
-                    save_file(
-                        unwarpped_student.state_dict(),
-                        os.path.join(ckpt_dir, "model.safetensors")
-                    )
+                    # save_file(
+                    #     unwarpped_student.state_dict(),
+                    #     os.path.join(ckpt_dir, "model.safetensors")
+                    # )
+                    unwarpped_student.encoder.save_pretrained(ckpt_dir)
                     print_rank("Saved full student model.")
-                training_args_dict = {
-                    "num_train_epochs": training_args.num_train_epochs,
-                    "learning_rate": training_args.learning_rate,
-                    "per_device_train_batch_size": data_args.per_device_train_batch_size,
-                    "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
-                    "temperature": model_args.temperature,
-                    "pooling": model_args.pooling,
-                }
-                with open(os.path.join(ckpt_dir, "training_args.json"), "w") as f:
-                    json.dump(training_args_dict, f, indent=2)
+                # training_args_dict = {
+                #     "num_train_epochs": training_args.num_train_epochs,
+                #     "learning_rate": training_args.learning_rate,
+                #     "per_device_train_batch_size": data_args.per_device_train_batch_size,
+                #     "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+                #     "temperature": model_args.temperature,
+                #     "pooling": model_args.pooling,
+                # }
+                # with open(os.path.join(ckpt_dir, "training_args.json"), "w") as f:
+                #     json.dump(training_args_dict, f, indent=2)
                 
                 accelerator.save_state(ckpt_dir)
                 print_rank(f"Checkpoint saved at {ckpt_dir}")
@@ -290,10 +281,18 @@ def finetune(
     if accelerator.is_main_process and training_args.save_strategy == "epoch":
         final_ckpt_dir = os.path.join(training_args.output_dir, f"checkpoint-final")
         os.makedirs(final_ckpt_dir, exist_ok=True)
-        save_file(
-            accelerator.unwrap_model(distiller.student).state_dict(),
-            os.path.join(final_ckpt_dir, "student_model.safetensors")
-        )
+        # save_file(
+        #     accelerator.unwrap_model(distiller.student).state_dict(),
+        #     os.path.join(final_ckpt_dir, "student_model.safetensors")
+        # )
+        unwarpped_student = accelerator.unwrap_model(distiller.student)
+        unwarpped_student.encoder.save_pretrained(final_ckpt_dir)
+        if hasattr(unwarpped_student, 'peft_config'):
+            unwarpped_student.peft_config.save_pretrained(final_ckpt_dir)
+            print_rank("Saved LoRA adapter model.")
+        else:
+            print_rank("Saved full student model.")
+        
         print_rank(f"Final model saved at {final_ckpt_dir}")
         
         # Push final model to hub
