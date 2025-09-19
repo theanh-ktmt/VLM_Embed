@@ -48,70 +48,72 @@ def process_image(image, resolution, max_dim=1344):
             image = image.resize((max_dim, max_dim))
     return image
 
-def add_distiller_arguments(parser):
-    """Thêm arguments cho Distiller"""
-    # Student model arguments
-    parser.add_argument('--student_model_path', type=str, required=True,
-                       help='Path to student model')
-    parser.add_argument('--student_checkpoint_path', type=str, default=None,
-                       help='Path to student checkpoint')
-    parser.add_argument('--student_lora', action='store_true',
-                       help='Whether student uses LoRA')
+# def add_distiller_arguments(parser):
+#     """Thêm arguments cho Distiller"""
+#     # Student model arguments
+#     parser.add_argument('--student_model_path', type=str, required=True,
+#                        help='Path to student model')
+#     parser.add_argument('--student_checkpoint_path', type=str, default=None,
+#                        help='Path to student checkpoint')
+#     parser.add_argument('--student_lora', action='store_true',
+#                        help='Whether student uses LoRA')
     
-    # Teacher model arguments  
-    parser.add_argument('--teacher_model_path', type=str, required=True,
-                       help='Path to teacher model')
-    parser.add_argument('--teacher_checkpoint_path', type=str, default=None,
-                       help='Path to teacher checkpoint')
-    parser.add_argument('--teacher_lora', action='store_true',
-                       help='Whether teacher uses LoRA')
+#     # Teacher model arguments  
+#     parser.add_argument('--teacher_model_path', type=str, required=True,
+#                        help='Path to teacher model')
+#     parser.add_argument('--teacher_checkpoint_path', type=str, default=None,
+#                        help='Path to teacher checkpoint')
+#     parser.add_argument('--teacher_lora', action='store_true',
+#                        help='Whether teacher uses LoRA')
     
-    # Common model arguments
-    parser.add_argument('--pooling', type=str, default='last',
-                       help='Pooling strategy')
-    parser.add_argument('--normalize', action='store_true',
-                       help='Whether to normalize embeddings')
-    parser.add_argument('--temperature', type=float, default=0.02,
-                       help='Temperature for similarity')
-    parser.add_argument('--model_type', type=str, default=None,
-                       help='Model type')
-    parser.add_argument('--device', type=str, default='cuda',
-                       help='Device to use (e.g., "cuda", "cpu")')
+#     # Common model arguments
+#     parser.add_argument('--pooling', type=str, default='last',
+#                        help='Pooling strategy')
+#     parser.add_argument('--normalize', action='store_true',
+#                        help='Whether to normalize embeddings')
+#     parser.add_argument('--temperature', type=float, default=0.02,
+#                        help='Temperature for similarity')
+#     parser.add_argument('--model_type', type=str, default=None,
+#                        help='Model type')
+#     parser.add_argument('--device', type=str, default='cuda',
+#                        help='Device to use (e.g., "cuda", "cpu")')
     
-    return parser
+#     return parser
 
 class Distiller(nn.Module):
-    def __init__(self, args, device):
+    def __init__(self, model_args, training_args, device):
         super(Distiller, self).__init__()
-        self.args = args
+        self.model_args = model_args
+        self.training_args = training_args
         self.device = device
         self.student = self._load_student()
         self.teacher = self._load_teacher()
-        self.student.to(self.device)
-        self.teacher.to(self.device)
-        self.temperature = args.temperature
+        # Dont need to move to device if using accelerate
+        # self.student.to(self.device)
+        # self.teacher.to(self.device)
+        self.temperature = model_args.temperature
     
     def _create_model_args(self, model_type='student'):
         """Tạo ModelArguments từ args hiện tại"""
         if model_type == 'student':
             model_args = ModelArguments(
-                model_name=self.args.student_model_path,
-                checkpoint_path=getattr(self.args, 'student_checkpoint_path', None),
-                lora=self.args.student_lora,
-                pooling=self.args.pooling,
-                normalize=self.args.normalize,
-                temperature=self.args.temperature,
-                model_type=getattr(self.args, 'model_type', None)
+                model_name=self.model_args.student_model_path,
+                checkpoint_path=getattr(self.model_args, 'student_checkpoint_path', None),
+                lora=self.model_args.student_lora,
+                pooling=self.model_args.pooling,
+                normalize=self.model_args.normalize,
+                temperature=self.model_args.temperature,
+                model_type=self.model_args.model_type
             )
         else:  # teacher
             model_args = ModelArguments(
-                model_name=self.args.teacher_model_path,
-                checkpoint_path=getattr(self.args, 'teacher_checkpoint_path', None),
-                lora=self.args.teacher_lora,
-                pooling=self.args.pooling,
-                normalize=self.args.normalize,
-                temperature=self.args.temperature,
-                model_type=getattr(self.args, 'model_type', None)
+                model_name=self.model_args.teacher_model_path,
+                checkpoint_path=getattr(self.model_args, 'teacher_checkpoint_path', None),
+                lora=self.model_args.teacher_lora,
+                pooling=self.model_args.pooling,
+                normalize=self.model_args.normalize,
+                temperature=self.model_args.temperature,
+                model_type=getattr(self.model_args, 'model_type', None)
             )
         return model_args
     
@@ -126,7 +128,23 @@ class Distiller(nn.Module):
     def _load_student(self):
         model_args = self._create_model_args('student')
         student = MMEBModel.load(model_args, is_trainable=True)
+        if self.model_args.student_lora:
+            lora_config = LoraConfig(
+                r=self.model_args.student_lora_r,
+                lora_alpha=self.model_args.student_lora_alpha,
+                lora_dropout=self.model_args.student_lora_dropout,
+                target_modules=self.model_args.student_lora_target_modules.split(','),
+            )
+            student = get_peft_model(student, lora_config)
+            print_rank("Applied LoRA to student model")
         return student 
+    def get_student_processor(self):
+        processor = load_processor(self._create_model_args('student'), None)
+        return processor
+    
+    def get_teacher_processor(self):
+        processor = load_processor(self._create_model_args('teacher'), None)
+        return processor
     
     def student_forward(self, qry: Dict[str, torch.Tensor], tgt: Dict[str, torch.Tensor]= None, *args, **kwargs):
         qry_reps = self.student.encode_input(qry) if qry is not None else None
@@ -147,28 +165,41 @@ class Distiller(nn.Module):
         
         return {"tea_qry_reps": qry_reps, "tea_tgt_reps": tgt_reps}
     
-    def compute_loss(self, qry: Dict[str, torch.Tensor], tgt: Dict[str, torch.Tensor]= None, *args, **kwargs):
-        student_outputs = self.student_forward(qry, tgt, *args, **kwargs)
+    def compute_loss(self, stu_qry: Dict[str, torch.Tensor], stu_tgt: Dict[str, torch.Tensor]= None,
+                     tea_qry: Dict[str, torch.Tensor]= None, tea_tgt: Dict[str, torch.Tensor]= None,
+                     *args, **kwargs):
+        student_outputs = self.student_forward(stu_qry, stu_tgt, *args, **kwargs)
         with torch.no_grad():
-            teacher_outputs = self.teacher_forward(qry, tgt, *args, **kwargs)
+            teacher_outputs = self.teacher_forward(tea_qry, tea_tgt, *args, **kwargs)
         
         loss = student_outputs["contrastive_loss"]
-        kd_loss_1 = nn.MSELoss()(torch.matmul(student_outputs["study_reps"], student_outputs["stu_tgt_reps"].t()),
-                                 torch.matmul(teacher_outputs["tea_qry_reps"], teacher_outputs["tea_tgt_reps"].t()))
-        kd_loss_2 = nn.MSELoss()(torch.matmul(student_outputs["stu_tgt_reps"], student_outputs["stu_qry_reps"].t()),
-                                 torch.matmul(teacher_outputs["tea_tgt_reps"], teacher_outputs["tea_qry_reps"].t()))
+        kd_loss_1 = nn.MSELoss()(torch.matmul(student_outputs["stu_qry_reps"], student_outputs["stu_qry_reps"].t()),
+                                 torch.matmul(teacher_outputs["tea_qry_reps"], teacher_outputs["tea_qry_reps"].t()))
+        kd_loss_2 = nn.MSELoss()(torch.matmul(student_outputs["stu_tgt_reps"], student_outputs["stu_tgt_reps"].t()),
+                                 torch.matmul(teacher_outputs["tea_tgt_reps"], teacher_outputs["tea_tgt_reps"].t()))
         kd_loss = 0.1 * (kd_loss_1 + kd_loss_2)
         loss += kd_loss
         
-        return loss
+        return {
+            'loss': loss,
+            'contrastive_loss': student_outputs["contrastive_loss"],
+            'kd_loss': kd_loss
+        }
+    def forward(self, stu_qry: Dict[str, torch.Tensor], stu_tgt: Dict[str, torch.Tensor]= None,
+                tea_qry: Dict[str, torch.Tensor]= None, tea_tgt: Dict[str, torch.Tensor]= None,
+                *args, **kwargs):
+        return self.compute_loss(stu_qry, stu_tgt, tea_qry, tea_tgt, *args, **kwargs)
 
 class DistillationCollator:
-    student_processor: ProcessorMixin
-    teacher_processor: ProcessorMixin
-    model_args: ModelArguments
-    data_args: DataArguments
-    training_args: TrainingArguments
-    batch_size: Optional[int] = None
+    def __init__(self, student_processor: ProcessorMixin, teacher_processor: ProcessorMixin,
+                 model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments,
+                 batch_size: Optional[int] = None):
+        self.student_processor = student_processor
+        self.teacher_processor = teacher_processor
+        self.model_args = model_args
+        self.data_args = data_args
+        self.training_args = training_args
+        self.batch_size = batch_size
     
     def _get_batch_inputs(self, batch, text_keyname, image_keyname):
         texts, visual_inputs = [], []
@@ -225,8 +256,8 @@ class DistillationCollator:
         if self.batch_size is not None and bs < self.batch_size:
             raise RuntimeError(f"Expected batch size {self.batch_size}, but got {bs}.")
         
-        process_student_fn = process_vlm_inputs_fns(self.model_args.student_backbone)
-        process_teacher_fn = process_vlm_inputs_fns(self.model_args.teacher_backbone)
+        process_student_fn = process_vlm_inputs_fns[self.model_args.student_backbone]
+        process_teacher_fn = process_vlm_inputs_fns[self.model_args.teacher_backbone]
         processed_student_qry_inputs = process_student_fn(student_qry_inputs, processor=self.student_processor, max_length=self.data_args.max_len)
         processed_student_pos_inputs = process_student_fn(student_pos_inputs, processor=self.student_processor, max_length=self.data_args.max_len)
         processed_teacher_qry_inputs = process_teacher_fn(teacher_qry_inputs, processor=self.teacher_processor, max_length=self.data_args.max_len)
@@ -242,8 +273,14 @@ class DistillationCollator:
         processed_teacher_pos_inputs['global_dataset_name'] = [e['global_dataset_name'] for e in examples]
         
         return {
-            'student_inputs': [processed_student_qry_inputs, processed_student_pos_inputs],
-            'teacher_inputs': [processed_teacher_qry_inputs, processed_teacher_pos_inputs]
+            'student_inputs': {
+                    'qry': processed_student_qry_inputs,
+                    'pos': processed_student_pos_inputs,
+                },
+            'teacher_inputs': {
+                'qry': processed_teacher_qry_inputs,
+                'pos': processed_teacher_pos_inputs,
+            }
         }
         
 class DistillationDataset(Dataset):
@@ -285,8 +322,8 @@ class DistillationDataset(Dataset):
         if 'neg_text' in self.train_data.column_names:
             neg_texts, neg_image_paths = self.train_data[data_idx]["neg_text"], self.train_data[data_idx]["neg_image_path"]
         else:
-            neg_texts, neg_image_paths = [''] * len(data_idx), [] * len(data_idx)
-        if isinstance(data_idx, int):
+            neg_texts, neg_image_paths = "", None
+        if not isinstance(qry_texts, list):
             qry_texts = [qry_texts]
             qry_image_paths = [qry_image_paths]
             pos_texts = [pos_texts]
@@ -302,7 +339,7 @@ class DistillationDataset(Dataset):
         for qry_text, qry_image_path, pos_text, pos_image_path, neg_text, neg_image_path \
             in zip(qry_texts, qry_image_paths, pos_texts, pos_image_paths, neg_texts, neg_image_paths):
             # instructions were hardcoded with Phi3 image special tokens
-            # Update image token for llava and colqwen2
+            # Update image token for llava and colqwen2, qwenvl
             if student_backbone != PHI3V:
                 stu_qry_text = qry_text.replace(VLM_IMAGE_TOKENS[PHI3V], VLM_IMAGE_TOKENS[student_backbone])
                 stu_pos_text = pos_text.replace(VLM_IMAGE_TOKENS[PHI3V], VLM_IMAGE_TOKENS[student_backbone])

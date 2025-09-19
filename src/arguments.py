@@ -32,7 +32,9 @@ class ModelArguments:
     student_backbone: str = field(default=None, metadata={"help": "student model backbone"})
     teacher_backbone: str = field(default=None, metadata={"help": "teacher model backbone"})
     student_model_path: str = field(default=None, metadata={"help": "student model name or path"})
-    teacher_model_name: str = field(default=None, metadata={"help": "teacher model name or path"})
+    teacher_model_path: str = field(default=None, metadata={"help": "teacher model name or path"})
+    train_student_lora: bool = field(default=False, metadata={"help": "whether to train student lora"})
+    teacher_lora: bool = field(default=False, metadata={"help": "whether teacher is lora"})
     
 
 @dataclass
@@ -63,6 +65,8 @@ class DataArguments:
     eval_subset_name: List[str] = field(default=None, metadata={"help": "Useful for datasets with subsets"})
     eval_image_dir: str = field(default=None, metadata={"help": "Eval Image directory path"})
     pos_only: bool = field(default=False, metadata={"help": "Only use positives"})
+    # new args distillation
+    
 
 
 @dataclass
