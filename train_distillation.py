@@ -52,6 +52,16 @@ def push_to_hub(repo_name=None, token=None, commit_message="Upload model",
         print_rank(f"Error pushing to hub: {str(e)}")
         return False
 
+
+def batch_to_device(batch, device):
+    _batch = {}
+    for key, value in batch.items():
+        if isinstance(value, torch.Tensor):
+            _batch[key] = value.to(device)
+        else:
+            _batch[key] = value
+    return _batch
+
 def finetune(
     model_args: ModelArguments, 
     data_args: DataArguments,
@@ -77,16 +87,19 @@ def finetune(
         shuffle=True, 
         drop_last=True,
     )
-    distiller, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        distiller, optimizer, train_dataloader, lr_scheduler
+    distiller.student, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        distiller.student, optimizer, train_dataloader, lr_scheduler
     )
-    # distiller.teacher.to(accelerator.device)
-    for param in distiller.teacher.parameters():
-        param.requires_grad = False
-    distiller.teacher.eval()
+    for n, p in distiller.student.named_parameters():
+        if p.requires_grad:  # thường chỉ là LoRA
+            p.data = p.data.to(torch.bfloat16)
+            # print(f"Cast {n} to bf16")
+
+    # cast_lora_to_bf16(distiller.student)
+        
+    print(next(distiller.student.parameters()).device)
     distiller.student.train()
     print(f"Number of parameters in student model: {sum(p.numel() for p in distiller.student.parameters() if p.requires_grad)}")
-    print(f"Number of parameters in teacher model: {sum(p.numel() for p in distiller.teacher.parameters() if p.requires_grad)}")
     
     if training_args.report_to == "wandb" and accelerator.is_main_process:
         wandb.init(
@@ -117,6 +130,7 @@ def finetune(
         end_epoch = False
         epoch_step = 0
         epoch_loss, epoch_contrastive_loss, epoch_kd_loss = 0, 0, 0
+        print(f"Device: {training_args.device}")
         
         progress_bar = tqdm(
             total=len(train_dataloader)//training_args.gradient_accumulation_steps,
@@ -143,10 +157,13 @@ def finetune(
             
             for batch in global_batch:
                 st_time = time.time()
-                student_inputs = batch['student_inputs']
-                teacher_inputs = batch['teacher_inputs']
+                student_qry_inputs = batch['qry']
+                student_pos_inputs = batch['pos']
+                teacher_qry_reps = batch['teacher_qry_reps']
+                teacher_pos_reps = batch['teacher_pos_reps']
+                # print(f"Teacher_qry_reps dtype: {teacher_qry_reps.dtype}, device: {teacher_qry_reps.device}")
                 with accelerator.accumulate(distiller.student):
-                    loss_dict = distiller(student_inputs['qry'], student_inputs['pos'], teacher_inputs['qry'], teacher_inputs['pos'])
+                    loss_dict = distiller(teacher_qry_reps, teacher_pos_reps, student_qry_inputs, student_pos_inputs)
                 
                     loss = loss_dict['loss'] / training_args.gradient_accumulation_steps
                     accelerator.backward(loss)
@@ -179,27 +196,7 @@ def finetune(
             epoch_contrastive_loss += sum(contrastive_losses)
             epoch_kd_loss += sum(kd_losses)
             
-            # logging_output['loss'].append(batch_loss)
-            # logging_output['contrastive_loss'].append(batch_contrastive_loss)
-            # logging_output['kd_loss'].append(batch_kd_loss)
-            # logging_output['step_time'].append(time.time() - global_st_time)
-            
             if accelerator.is_main_process and step % training_args.logging_steps == 0:
-                # avg_micro_step_time = sum(logging_output['micro_step_time'])/len(logging_output['micro_step_time'])
-                # avg_step_time = sum(logging_output['step_time'])/len(logging_output['step_time'])
-                
-                # total_step = len(train_dataloader) // training_args.gradient_accumulation_steps * training_args.num_train_epochs
-                # remaining_steps = total_step - step
-                # eta_seconds = remaining_steps * avg_step_time
-                # eta_hours = eta_seconds / 3600
-                # print_master(
-                #     f"Epoch {epoch + 1} | Step {step} | "
-                #     f"Loss: {batch_loss:.4f} | Contrastive Loss: {batch_contrastive_loss:.4f} | KD Loss: {batch_kd_loss:.4f} | "
-                #     f"LR: {optimizer.param_groups[0]['lr']:.6f} | "
-                #     f"Micro Step Time: {avg_micro_step_time:.4f}s | "
-                #     f"Step Time: {avg_step_time:.4f}s | "
-                #     f"ETA: {eta_hours:.2f}h"
-                # )
                 progress_bar.set_postfix({
                     "loss": f"{batch_loss:.4f}",
                     "contrastive_loss": f"{batch_contrastive_loss:.4f}",
@@ -274,9 +271,9 @@ def finetune(
                 
                 # if training_args.push_to_hub and training_args.hub_model_id:
                 #     hub_repo_name = f"{training_args.hub_model_id}-epoch{epoch + 1}"
-                student_config = AutoConfig.from_pretrained(model_args.student_model_path) if model_args.student_model_path else None
-                tokenizer = AutoTokenizer.from_pretrained(model_args.student_model_path) if model_args.student_model_path else None
-                processor = AutoProcessor.from_pretrained(model_args.student_model_path) if model_args.student_model_path else None
+                student_config = AutoConfig.from_pretrained(model_args.model_name) if model_args.model_name else None
+                tokenizer = AutoTokenizer.from_pretrained(model_args.model_name) if model_args.model_name else None
+                processor = AutoProcessor.from_pretrained(model_args.model_name) if model_args.model_name else None
                 student_config.save_pretrained(ckpt_dir)
                 tokenizer.save_pretrained(ckpt_dir)
                 processor.save_pretrained(ckpt_dir)
@@ -311,20 +308,13 @@ def finetune(
         # Push final model to hub
         # if training_args.push_to_hub and training_args.hub_model_id:
         final_hub_repo_name = f"{training_args.hub_model_id}-final"
-        if model_args.student_model_path:
-            student_config = AutoConfig.from_pretrained(model_args.student_model_path)
-            tokenizer = AutoTokenizer.from_pretrained(model_args.student_model_path)
-            processor = AutoProcessor.from_pretrained(model_args.student_model_path)
+        if model_args.model_name:
+            student_config = AutoConfig.from_pretrained(model_args.model_name)
+            tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
+            processor = AutoProcessor.from_pretrained(model_args.model_name)
             student_config.save_pretrained(final_ckpt_dir)
             tokenizer.save_pretrained(final_ckpt_dir)
             processor.save_pretrained(final_ckpt_dir)
-        # hub_repo_name = f"{training_args.hub_model_id}-final"
-        # push_to_hub(
-        #     repo_name=final_hub_repo_name,
-        #     token=training_args.hub_token,
-        #     commit_message="Final model",
-        #     local_dir=final_ckpt_dir
-        # )
 
         if training_args.report_to == "wandb":
             wandb.finish()
@@ -349,7 +339,6 @@ def main():
     distiller = Distiller(model_args, training_args, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     collator = DistillationCollator(
         student_processor=distiller.get_student_processor(),
-        teacher_processor=distiller.get_teacher_processor(),
         model_args=model_args,
         data_args=data_args,
         training_args=training_args,

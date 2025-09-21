@@ -66,7 +66,8 @@ def main():
         logger.info("No checkpoint found. Starting fresh training.")
 
     # Initialize WandB if enabled
-    if 'wandb' in training_args.report_to:
+    # if 'wandb' in training_args.report_to:
+    if training_args.report_to == "wandb":
         if (torch.distributed.is_initialized() and torch.distributed.get_rank() == 0) or (not torch.distributed.is_initialized()):
             print_rank('init wandb')
             wandb.init(project=training_args.project_name, name=training_args.run_name, mode="online")
@@ -84,7 +85,7 @@ def main():
     processor = load_processor(model_args, data_args)
     setattr(model, 'processor', processor)
     
-    with open(data_args.data_config, 'r') as f: 
+    with open(data_args.dataset_config, 'r') as f: 
         data_config = yaml.safe_load(f)
         train_dataset = init_mixed_dataset(data_config, model_args, data_args, training_args)
     

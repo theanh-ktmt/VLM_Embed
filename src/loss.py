@@ -2,8 +2,7 @@ from torch import Tensor
 import torch.distributed as dist
 import torch
 import torch.nn.functional as F
-import dist_utils
-
+from src import dist_utils
 
 class SimpleContrastiveLoss:
     def __init__(self, temperature: float = 0.02):
@@ -198,7 +197,7 @@ class DistributedContrastiveLossBatchRank(SimpleContrastiveLossBatchRank):
         dist.all_gather(gathered_tensors, t)
         return torch.cat(gathered_tensors, dim=0)
 
-    def __call__(self, x: Tensor, y: Tensor, **kwargs: Any) -> Tensor:
+    def __call__(self, x: Tensor, y: Tensor, **kwargs) -> Tensor:
         """
         Computes the distributed batch-ranked contrastive loss.
 

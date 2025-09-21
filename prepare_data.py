@@ -17,6 +17,7 @@ from tqdm import tqdm
 import numpy as np
 import pickle
 import os
+import datasets
 from datasets import load_dataset, concatenate_datasets
 from evaluation.mmeb_baselines.eval_utils import get_pred
 from src.utils import print_rank
@@ -51,64 +52,88 @@ def process_image(image, resolution, max_dim=1344):
     return image
 
 class TextImageDataset(Dataset):
-    def __init__(self, data_args, model_args):
+    def __init__(self, data_args, model_args, subset, text_field, img_path_field, mod_instruction=None):
+        """
+        (text_field, image_field) -> ("qry_text", "qry_img_path") or ("tgt_text", "tgt_img_path")
+        """
         self.data_args = data_args
         self.model_args = model_args
-        train_data = []
-        print_rank(f"Loading {len(data_args.subset_name)} datasets: {data_args.subset_name}")
-        for subset in data_args.subset_name:
-            subset_data = load_dataset(
-                self.data_args.dataset_name, subset,
-                split=data_args.dataset_split,
-            )
-            train_data.append(subset_data)
-        self.train_data = concatenate_datasets(train_data)
-    
+        self.backbone = self.model_args.model_backbone
+
+        self.eval_data = load_dataset(
+            self.data_args.dataset_name,
+            subset,
+            split=self.data_args.dataset_split,
+        )
+        self.paired_data = self.get_paired_data(text_field, img_path_field)
+        # self.paired_dataset = datasets.Dataset.from_dict({
+        #     "text": [pair["text"] for pair in self.paired_data],
+        #     "img_path": [pair["img_path"] for pair in self.paired_data]
+        # })
+        if(("tgt" in text_field) and (mod_instruction is not None) and self.data_args.tgt_prefix_mod):
+            print("Using TGT mod", mod_instruction, flush=True)            
+            self.paired_dataset = datasets.Dataset.from_dict({
+                                "text": [mod_instruction + pair["text"] for pair in self.paired_data],
+                                "img_path": [pair["img_path"] for pair in self.paired_data]
+                                })
+            print(">>>>>>>>>>>>>inside tgt_mod_txt", flush=True)
+            # import ipdb; ipdb.set_trace()
+        else:
+            print("Not using TGT mod", mod_instruction, flush=True)            
+            self.paired_dataset = datasets.Dataset.from_dict({
+                                "text": [pair["text"] for pair in self.paired_data],
+                                "img_path": [pair["img_path"] for pair in self.paired_data]
+                                })
+
     def __len__(self):
-        return len(self.train_data)
+        return len(self.paired_dataset)
+
+    def __getitem__(self, item):
+        text, img_path = self.paired_dataset[item]["text"], self.paired_dataset[item]["img_path"]
+        if self.backbone != PHI3V:
+            text = text.replace(VLM_IMAGE_TOKENS[PHI3V], VLM_IMAGE_TOKENS[self.backbone])
+        # if(self.backbone==INTERN_VL3):
+        #     full_img_path = os.path.join(self.data_args.image_dir, img_path)
+        #     return text, [full_img_path]
+        return text, self._get_image(img_path)
+
+    def _process_image(self, image, resolution):
+        if image is None:
+            return None
+        if resolution == "high":
+            image = image.resize((1344, 1344))
+        else:
+            image = image.resize((336, 336))
+        return image
+
     def _get_image(self, img_path):
-        if not img_path:
+        if img_path == "":
             return None
         full_img_path = os.path.join(self.data_args.image_dir, img_path)
         image = Image.open(full_img_path)
-        backbone = self.model_args.model_backbone
-        if backbone != PHI3V and self.data_args.image_resolution:
+        if self.model_args.model_backbone != PHI3V and self.data_args.image_resolution:
             return process_image(image, self.data_args.image_resolution)
         else:
             return image
-        
-    def __getitem__(self, data_idx):
-        print(f">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>get image called, {data_idx}", flush=True)
-        qry_texts, qry_image_paths, pos_texts, pos_image_paths = (
-            self.train_data[data_idx]["qry"], self.train_data[data_idx]["qry_image_path"],
-            self.train_data[data_idx]["pos_text"], self.train_data[data_idx]["pos_image_path"]
-        )
-        if isinstance(data_idx, int):
-            qry_texts = [qry_texts]
-            qry_image_paths = [qry_image_paths]
-            pos_texts = [pos_texts]
-            pos_image_paths = [pos_image_paths]
-        _qry_texts, _qry_images, _pos_texts, _pos_images = [], [], [], []
-        backbone = self.model_args.model_backbone
-        for qry_text, qry_image_path, pos_text, pos_image_path in zip(qry_texts, qry_image_paths, pos_texts, pos_image_paths):
-            # instructions were hardcoded with Phi3 image special tokens
-            # Update image token for llava and colqwen2
-            if backbone != PHI3V:
-                qry_text = qry_text.replace(VLM_IMAGE_TOKENS[PHI3V], VLM_IMAGE_TOKENS[backbone])
-                pos_text = pos_text.replace(VLM_IMAGE_TOKENS[PHI3V], VLM_IMAGE_TOKENS[backbone])
-                neg_text = neg_text.replace(VLM_IMAGE_TOKENS[PHI3V], VLM_IMAGE_TOKENS[backbone]) if neg_text else None
-            qry_image = self._get_image(qry_image_path)
-            pos_image = self._get_image(pos_image_path)
-            if (not qry_text and not qry_image) or (not pos_text and not pos_image):
-                print("empty inputs")
-                continue
-            _qry_texts.append(qry_text)
-            _qry_images.append(qry_image)
-            _pos_texts.append(pos_text)
-            _pos_images.append(pos_image)
+        return image
 
-        return {"query_text": _qry_texts, "query_image": _qry_images,
-                "pos_text": _pos_texts, "pos_image": _pos_images}
+    def get_paired_data(self, text_field, img_path_field):
+        """
+        (text_field, image_field) -> ("qry_text", "qry_img_path") or ("tgt_text", "tgt_img_path")
+        """
+        paired_data = []
+        for row in self.eval_data:
+            if isinstance(row[text_field], str):
+                if isinstance(row[img_path_field], list):
+                    for img_path in row[img_path_field]:
+                        paired_data.append({"text": row[text_field], "img_path": img_path})
+                else:
+                    paired_data.append({"text": row[text_field], "img_path": row[img_path_field]})
+            elif isinstance(row[text_field], list):
+                assert isinstance(row[img_path_field], list) and len(row[img_path_field]) == len(row[text_field])
+                for text, img_path in zip(row[text_field], row[img_path_field]):
+                    paired_data.append({"text": text, "img_path": img_path})
+        return paired_data
     
 
 def main():
@@ -147,21 +172,21 @@ def main():
         if os.path.exists(encode_output_path):
             print_rank(f"Found existing encoded file: {encode_output_path}, skipping...")
             continue
-        
-        eval_qry_dataset = EvalDataset(
+        print(f"\033[91m{idx+1}/{len(data_args.subset_name)}: Processing {subset} now!\033[0m")
+        eval_qry_dataset = TextImageDataset(
             data_args=data_args,
             model_args=model_args,
-            subset_name=subset,
+            subset=subset,
             text_field="qry",
-            image_path_field="qry_image_path",
+            img_path_field="qry_image_path",
         )
         
-        eval_tgt_dataset = EvalDataset(
+        eval_tgt_dataset = TextImageDataset(
             data_args=data_args,
             model_args=model_args,
-            subset_name=subset,
+            subset=subset,
             text_field="pos_text",
-            image_path_field="pos_image_path",
+            img_path_field="pos_image_path",
         )
         
         eval_qry_loader = DataLoader(
@@ -189,8 +214,8 @@ def main():
                     batch = batch_to_device(batch, training_args.device)
                     with torch.autocast(enabled=True, dtype=torch.bfloat16, device_type="cuda"):
                         output = model(qry=batch)
-                    encoded_qry_tensor.append(output['qry_embeds'].cpu().detach().float())
-                encoded_qry_tensor = np.concatenate(encoded_qry_tensor)
+                    encoded_qry_tensor.append(output['qry_reps'].cpu().detach().to(torch.float16))
+                encoded_qry_tensor = np.concatenate([x.numpy() for x in encoded_qry_tensor])
             print(f"encoded_qry_tensor shape: {encoded_qry_tensor.shape}")    
             
             encoded_tgt_tensor = []
@@ -199,17 +224,17 @@ def main():
                     batch = batch_to_device(batch, training_args.device)
                     with torch.autocast(enabled=True, dtype=torch.bfloat16, device_type="cuda"):
                         output = model(tgt=batch)
-                    encoded_tgt_tensor.append(output['tgt_embeds'].cpu().detach().float())
-                encoded_tgt_tensor = np.concatenate(encoded_tgt_tensor)
+                    encoded_tgt_tensor.append(output['tgt_reps'].cpu().detach().to(torch.float16))
+                encoded_tgt_tensor = np.concatenate([x.numpy() for x in encoded_tgt_tensor])
             print(f"encoded_tgt_tensor shape: {encoded_tgt_tensor.shape}")
             assert len(eval_qry_dataset) == len(encoded_qry_tensor), f"len(eval_qry_dataset)={len(eval_qry_dataset)} vs len(encoded_qry_tensor)={len(encoded_qry_tensor)}"
             assert len(eval_tgt_dataset) == len(encoded_tgt_tensor), f"len(eval_tgt_dataset)={len(eval_tgt_dataset)} vs len(encoded_tgt_tensor)={len(encoded_tgt_tensor)}"
             with open(encode_output_path, "wb") as f:
                 pickle.dump({
-                    'qry_embeddings': encoded_qry_tensor,
-                    'tgt_embeddings': encoded_tgt_tensor,
+                    'qry_reps': encoded_qry_tensor,
+                    'tgt_reps': encoded_tgt_tensor,
                     'index': list(range(len(eval_qry_dataset))),
-                })
+                }, f)
             print_rank(f"Encoded file saved to {encode_output_path}")
         else:
             print_rank(f"Encoded file already exists: {encode_output_path}, skipping...")
