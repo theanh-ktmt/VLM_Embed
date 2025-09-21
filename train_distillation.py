@@ -78,7 +78,7 @@ def finetune(
     accelerator = Accelerator(
         gradient_accumulation_steps=training_args.gradient_accumulation_steps,
         mixed_precision="bf16",
-        log_with="wandb" if training_args.report_to == "wandb" else None,
+        log_with="wandb" if "wandb" in training_args.report_to else None,
     )
     train_dataloader = DataLoader(
         train_dataset, 
@@ -101,10 +101,11 @@ def finetune(
     distiller.student.train()
     print(f"Number of parameters in student model: {sum(p.numel() for p in distiller.student.parameters() if p.requires_grad)}")
     
-    if training_args.report_to == "wandb" and accelerator.is_main_process:
+    if "wandb" in training_args.report_to and accelerator.is_main_process:
+        print("Initialized wandb")
         wandb.init(
             project="vlm_distillation", 
-            name=training_args.student_backbone, 
+            name=model_args.model_backbone, 
             config={
                 "learning_rate": training_args.learning_rate,
                 "batch_size": training_args.per_device_train_batch_size,
@@ -204,7 +205,7 @@ def finetune(
                     "lr": f"{optimizer.param_groups[0]['lr']:.6f}",
                 })
                 progress_bar.update(1)
-                if training_args.report_to == "wandb":
+                if "wandb" in training_args.report_to:
                     wandb.log({
                         "train/loss": batch_loss,
                         "train/contrastive_loss": batch_contrastive_loss,
@@ -227,7 +228,7 @@ def finetune(
                 f"Avg Contrastive Loss: {avg_contrastive_loss:.4f} | Avg KD Loss: {avg_kd_loss:.4f} | "
             )
             
-            if training_args.report_to == "wandb":
+            if "wandb" in training_args.report_to:
                 wandb.log({
                     "epoch/avg_loss": avg_epoch_loss,
                     "epoch/avg_contrastive_loss": avg_contrastive_loss,
@@ -316,7 +317,7 @@ def finetune(
             tokenizer.save_pretrained(final_ckpt_dir)
             processor.save_pretrained(final_ckpt_dir)
 
-        if training_args.report_to == "wandb":
+        if "wandb" in training_args.report_to:
             wandb.finish()
 
     return logging_output
@@ -361,14 +362,14 @@ def main():
         from transformers import get_linear_schedule_with_warmup
         lr_scheduler = get_linear_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=training_args.warmup_steps,
+            num_warmup_steps=training_args.warmup_ratio * total_steps ,
             num_training_steps=total_steps,
         )
     elif training_args.lr_scheduler_type == "cosine":
         from transformers import get_cosine_schedule_with_warmup
         lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=training_args.warmup_steps,
+            num_warmup_steps=training_args.warmup_ratio * total_steps,
             num_training_steps=total_steps,
         )
     else:

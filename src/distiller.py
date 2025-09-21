@@ -91,7 +91,7 @@ class Distiller(nn.Module):
                                  torch.matmul(teacher_qry_reps, teacher_qry_reps.t()))
         kd_loss_2 = nn.MSELoss()(torch.matmul(student_outputs["stu_tgt_reps"], student_outputs["stu_tgt_reps"].t()),
                                  torch.matmul(teacher_pos_reps, teacher_pos_reps.t()))
-        kd_loss = 0.1 * (kd_loss_1 + kd_loss_2)
+        kd_loss = self.training_args.kd_weight * (kd_loss_1 + kd_loss_2)
         loss += kd_loss
         
         return {
