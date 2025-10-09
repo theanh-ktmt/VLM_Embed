@@ -104,16 +104,31 @@ class MMEBModel(nn.Module):
                 input['pixel_values'] = input['pixel_values'].squeeze(1)
                 input['image_sizes'] = input['image_sizes'].squeeze(1)
             # print(f"Pixels values shape: {input['pixel_values'].shape if 'pixel_values' in input else None}")
-            hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True)
+            hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
+            # add for image feature
+            if hasattr(hidden_states, 'image_hidden_states'):
+                image_features = hidden_states.image_hidden_states
+                print(f"Image features of LLaVa OV shape: {image_features.shape if image_features else None}")
+            else: 
+                image_features = None
             hidden_states = hidden_states.hidden_states[-1]
+            attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
+            print(f"Attention matrix length: {len(attention_matrix) if attention_matrix else None}")
+            print(f"Attention matrix shape: {attention_matrix.shape if attention_matrix else None}")
             pooled_output = self._pooling(hidden_states, input['attention_mask'])
-            return pooled_output
+            return pooled_output, image_features, attention_matrix
         else:
             # import ipdb; ipdb.set_trace()
-            hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True)
+            hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
+            if hasattr(hidden_states, 'image_hidden_states'):
+                image_features = hidden_states.image_hidden_states
+                print(f"Image features of Qwen2VL shape: {image_features.shape if image_features else None}")
             hidden_states = hidden_states.hidden_states[-1]
+            attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
+            print(f"Attention matrix length: {len(attention_matrix) if attention_matrix else None}")
+            print(f"Attention matrix shape: {attention_matrix.shape if attention_matrix else None}")
             pooled_output = self._pooling(hidden_states, input['attention_mask'])
-            return pooled_output
+            return pooled_output, image_features, attention_matrix
 
     def _pooling(self, last_hidden_state, attention_mask):
         if self.pooling == 'last' or self.pooling == 'eos':
@@ -133,8 +148,6 @@ class MMEBModel(nn.Module):
         if self.normalize:
             reps = torch.nn.functional.normalize(reps, p=2, dim=-1)
         return reps
-
-
 
     @classmethod
     def build(cls, model_args: ModelArguments, **kwargs):
@@ -168,7 +181,7 @@ class MMEBModel(nn.Module):
                 low_cpu_mem_usage=True,
             )
         elif model_backbone == LLAVA_ONEVISION:
-            config._attn_implementation = "flash_attention_2"
+            config._attn_implementation = "eager"
             config.use_cache = False
             config.padding_side = "left"
             base_model = LlavaOnevisionForConditionalGeneration.from_pretrained(
@@ -178,7 +191,7 @@ class MMEBModel(nn.Module):
                 low_cpu_mem_usage=True,
             )
         elif model_backbone in [QWEN2_VL, QWEN2_5_VL]:
-            config._attn_implementation = "flash_attention_2"
+            config._attn_implementation = "eager"
             config.padding_side = "left"
             config.use_cache = False
             base_model = backbone2model[model_backbone].from_pretrained(
@@ -188,7 +201,7 @@ class MMEBModel(nn.Module):
                 low_cpu_mem_usage=True,
             )
         elif model_backbone in [INTERN_VL3]:
-            config._attn_implementation = "flash_attention_2"
+            config._attn_implementation = "eager"
             config.padding_side = "left"
             config.use_cache = False
             base_model = backbone2model[model_backbone].from_pretrained(
@@ -203,7 +216,7 @@ class MMEBModel(nn.Module):
             base_model.img_context_token_id=151667
 
         elif model_backbone in [QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION]:
-            config._attn_implementation = "flash_attention_2"
+            config._attn_implementation = "eager"
             config.padding_side = "left"
             config.use_cache = False
 
@@ -227,7 +240,7 @@ class MMEBModel(nn.Module):
             config.use_cache = False
             base_model = cls.TRANSFORMER_CLS.from_pretrained(
                 model_args.model_name, **kwargs, config=config,
-                attn_implementation="flash_attention_2",
+                attn_implementation="eager",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True)
 
@@ -285,8 +298,8 @@ class MMEBModel(nn.Module):
         print_master(f'Loading backbone [{model_args.model_backbone}] from {model_args.model_name}')
         if model_args.model_backbone in {LLAVA_ONEVISION, LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION}:
             config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)
-            config._attn_implementation = "flash_attention_2"
-            config.vision_config._attn_implementation = "flash_attention_2"
+            config._attn_implementation = "eager"
+            config.vision_config._attn_implementation = "eager"
             base_model = backbone2model[model_args.model_backbone].from_pretrained(
                 model_args.model_name,
                 torch_dtype=torch.bfloat16,
@@ -294,7 +307,7 @@ class MMEBModel(nn.Module):
                 config=config
             )
         elif model_args.model_backbone in [INTERN_VL3]:
-            config._attn_implementation = "flash_attention_2"
+            config._attn_implementation = "eager"
             config.padding_side = "left"
             config.use_cache = False
             base_model = backbone2model[model_backbone].from_pretrained(
@@ -381,8 +394,8 @@ class MMEBModel(nn.Module):
 
     def forward(self, qry: Dict[str, Tensor] = None, tgt: Dict[str, Tensor] = None, *args, **kwargs):
         # print(f"qry keys: {qry.keys() if qry else None}, tgt keys: {tgt.keys() if tgt else None}")
-        qry_reps = self.encode_input(qry) if qry else None  # (bsz_per_device, dim)
-        tgt_reps = self.encode_input(tgt) if tgt else None # (bsz_per_device, dim)
+        qry_reps, _, _ = self.encode_input(qry) if qry else None  # (bsz_per_device, dim)
+        tgt_reps, _, _ = self.encode_input(tgt) if tgt else None # (bsz_per_device, dim)
 
         if qry_reps is None or tgt_reps is None:
             return {"qry_reps": qry_reps, "tgt_reps": tgt_reps}

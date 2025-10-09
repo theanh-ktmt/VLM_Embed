@@ -1270,6 +1270,8 @@ class Qwen2VLCausalLMOutputWithPast(ModelOutput):
             heads.
         rope_deltas (`torch.LongTensor` of shape `(batch_size, )`, *optional*):
             The rope index difference between sequence length and multimodal rope.
+        image_hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
+            Tuple of `torch.FloatTensor` (one for the output of each layer) of shape
     """
 
     loss: Optional[torch.FloatTensor] = None
@@ -1278,6 +1280,7 @@ class Qwen2VLCausalLMOutputWithPast(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     rope_deltas: Optional[torch.LongTensor] = None
+    image_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
 QWEN2_VL_INPUTS_DOCSTRING = r"""
@@ -1801,6 +1804,7 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel, GenerationMixin):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            image_hidden_states=image_embeds if pixel_values is not None else None,
             rope_deltas=self.rope_deltas,
         )
 
