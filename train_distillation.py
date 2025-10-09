@@ -8,6 +8,7 @@ import time
 import os
 import sys
 from tqdm import tqdm 
+import math
 
 import torch
 import torch.nn as nn 
@@ -111,7 +112,7 @@ def finetune(
         else:
             # path provided but not found: fall back to default params and warn
             print_rank(f"Warning: deepspeed config path {ds_config_path} not found. Using default config_params.")
-            ds_config = None
+            ds_config = {}
     
     ds_config["gradient_accumulation_steps"] = training_args.gradient_accumulation_steps
     ds_config["train_micro_batch_size_per_gpu"] = training_args.per_device_train_batch_size
@@ -129,12 +130,13 @@ def finetune(
     for n, p in model_engine.named_parameters():
         if p.requires_grad:
             try:
-                p.data = p.data.to(torch.bfloat16)
-            except Exception:
+                p.data = p.data.to(dtype=torch.bfloat16)
+            except Exception as e:
                 # If bf16 not supported, ignore and continue
+                print_rank(f"Warning: cannot cast param {n} to bfloat16: {e}")
                 pass
-    
-    print_rank(next(model_engine.parameters()).device)
+
+    print_rank(f"model device: {next(model_engine.parameters()).device}")
     model_engine.train()
     num_trainable = sum(p.numel() for p in model_engine.parameters() if p.requires_grad)
     print_rank(f"Number of parameters in student model: {num_trainable}")
@@ -143,7 +145,7 @@ def finetune(
         print("Initialized wandb")
         wandb.init(
             project="vlm_distillation", 
-            name=model_args.model_backbone, 
+            name=model_args.model_backbone if model_args.model_backbone else "distillation_experiment", 
             config={
                 "learning_rate": training_args.learning_rate,
                 "batch_size": training_args.per_device_train_batch_size,
@@ -162,7 +164,8 @@ def finetune(
         'micro_step_time': [],
         'step_time': []
     }
-    
+
+    # main epoch loop
     for epoch in range(training_args.num_train_epochs):
         logging_output['epoch'] = epoch + 1
         print_rank("Start iteration of epoch {}".format(epoch + 1))
@@ -173,9 +176,9 @@ def finetune(
         
         if is_distributed and isinstance(train_dataloader.sampler, DistributedSampler):
             train_dataloader.sampler.set_epoch(epoch)
-        
-        grad_accum = ds_config.get("gradient_accumulation_steps", 1)
-        total_steps = len(train_dataloader) // grad_accum
+        train_iter = iter(train_dataloader)
+        grad_accum = int(ds_config.get("gradient_accumulation_steps", 1))
+        total_steps = math.ceil(len(train_dataloader) / grad_accum)
         print_rank(f"[INFO] Batches per epoch: {len(train_dataloader)}, GradAccum: {grad_accum}, Total steps this epoch: {total_steps}")
         
         progress_bar = tqdm(
@@ -184,12 +187,10 @@ def finetune(
             disable=(getattr(model_engine, "global_rank", 0) != 0)
         )
         
-        train_iter = iter(train_dataloader)
-        
         while True:
             global_batch = []
             losses, contrastive_losses, kd_losses = [], [], []
-            for i in range(training_args.gradient_accumulation_steps):
+            for i in range(grad_accum):
                 try:
                     batch = next(train_iter)
                     global_batch.append(batch)
@@ -197,7 +198,7 @@ def finetune(
                     end_epoch = True
                     break
             
-            if end_epoch:
+            if end_epoch and len(global_batch) == 0:
                 break
             
             for batch in global_batch:
@@ -208,7 +209,7 @@ def finetune(
                 
                 loss = loss_dict['loss']
                 model_engine.backward(loss)
-                model_engine.step()
+                
                 contrastive_loss = loss_dict['contrastive_loss']
                 kd_loss = loss_dict['kd_loss']
                 
@@ -216,9 +217,13 @@ def finetune(
                 contrastive_losses.append(contrastive_loss.detach().item())
                 kd_losses.append(kd_loss.detach().item())
                 logging_output['micro_step_time'].append(time.time() - st_time)
-                
+            model_engine.step()
             
-            
+            try: 
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
+            except Exception: 
+                pass 
             step += 1
             epoch_step += 1
             logging_output['global_step'] = step
@@ -234,13 +239,20 @@ def finetune(
             epoch_kd_loss += sum(kd_losses)
             
             if getattr(model_engine, "global_rank", 0) == 0 and step % training_args.logging_steps == 0:
+                current_lr = None
+                try: 
+                    current_lr = lr_scheduler.get_last_lr()[0] if lr_scheduler is not None else None
+                except Exception:
+                    print_rank("Cannot get learning rate from lr_scheduler")
+                    current_lr = None
                 progress_bar.set_postfix({
                     "loss": f"{batch_loss:.4f}",
                     "contrastive_loss": f"{batch_contrastive_loss:.4f}",
                     "kd_loss": f"{batch_kd_loss:.4f}",
-                    "lr": f"{lr_scheduler.get_last_lr()[0]:.6f}",
+                    "lr": f"{current_lr:.6f}" if current_lr is not None else "N/A",
                 })
                 progress_bar.update(1)
+                
                 if "wandb" in training_args.report_to:
                     wandb.log({
                         "train/loss": batch_loss,
@@ -253,6 +265,10 @@ def finetune(
                     
                     logging_output['micro_step_time'] = []
                     logging_output['step_time'] = []
+                    
+            if end_epoch:
+                continue
+            
         # End of epoch
         if getattr(model_engine, "global_rank", 0) == 0:
             avg_epoch_loss = epoch_loss / max(1, epoch_step)
@@ -275,17 +291,31 @@ def finetune(
             if training_args.save_strategy == "epoch":
                 ckpt_dir = os.path.join(training_args.output_dir, f"checkpoint-epoch{epoch + 1}")
                 os.makedirs(ckpt_dir, exist_ok=True)
-                unwarpped_student = model_engine.module.student
+                unwarpped_student = getattr(getattr(model_engine, "module", model_engine), "student", None)
                 
-                if hasattr(unwarpped_student, 'peft_config'):
-                    unwarpped_student.peft_config.save_pretrained(ckpt_dir)
-                    unwarpped_student.encoder.save_pretrained(ckpt_dir)
-                    print_rank("Saved LoRA adapter model.")
-                else:
-                    unwarpped_student.encoder.save_pretrained(ckpt_dir)
-                    print_rank("Saved full student model.")
-                
-                print_rank(f"Checkpoint saved at {ckpt_dir}")
+                if unwarpped_student is None:
+                    raise ValueError("Cannot find the student model in the model engine.")
+                else: 
+                    if hasattr(unwarpped_student, 'peft_config'):
+                        try: 
+                            unwarpped_student.peft_config.save_pretrained(ckpt_dir)
+                            print_rank("Saved LoRA adapter model.")
+                        except Exception as e: 
+                            print_rank(f"Warning: cannot save peft_config: {e}")
+                        try: 
+                            unwarpped_student.encoder.save_pretrained(ckpt_dir)
+                        except Exception as e:
+                            print_rank(f"Warning: cannot save encoder: {e}")
+                        print_rank("Saved LoRA adapter model.")
+                    else:
+                        try:
+                            unwarpped_student.encoder.save_pretrained(ckpt_dir)
+                            print_rank("Saved full student model")
+                        except Exception as e:
+                            print_rank(f"Warning: cannot save encoder: {e}")
+                        print_rank("Saved full student model.")
+                    
+                    print_rank(f"Checkpoint saved at {ckpt_dir}")
                 
                 student_config = AutoConfig.from_pretrained(model_args.model_name) if model_args.model_name else None
                 tokenizer = AutoTokenizer.from_pretrained(model_args.model_name) if model_args.model_name else None
@@ -303,14 +333,24 @@ def finetune(
         final_ckpt_dir = os.path.join(training_args.output_dir, f"checkpoint-final")
         os.makedirs(final_ckpt_dir, exist_ok=True)
 
-        unwarpped_student = model_engine.module.student
-        unwarpped_student.encoder.save_pretrained(final_ckpt_dir)
-        if hasattr(unwarpped_student, 'peft_config'):
-            unwarpped_student.peft_config.save_pretrained(final_ckpt_dir)
-            print_rank("Saved LoRA adapter model.")
+        unwarpped_student = getattr(getattr(model_engine, "module", model_engine), "student", None)
+        if unwarpped_student is not None:
+            try:
+                unwarpped_student.encoder.save_pretrained(final_ckpt_dir)
+            except Exception as e:
+                print_rank(f"Warning saving final encoder: {e}")
+
+            if hasattr(unwarpped_student, 'peft_config'):
+                try:
+                    unwarpped_student.peft_config.save_pretrained(final_ckpt_dir)
+                    print_rank("Saved LoRA adapter model.")
+                except Exception as e:
+                    print_rank(f"Warning saving final peft_config: {e}")
+            else:
+                print_rank("Saved full student model.")
         else:
-            print_rank("Saved full student model.")
-        
+            print_rank("Warning: cannot find student model to save in final checkpoint.")
+
         print_rank(f"Final model saved at {final_ckpt_dir}")
         
         if model_args.model_name:
@@ -322,7 +362,10 @@ def finetune(
             processor.save_pretrained(final_ckpt_dir)
 
         if "wandb" in training_args.report_to:
-            wandb.finish()
+            try:
+                wandb.finish()
+            except Exception as e:
+                print_rank(f"Warning: cannot finalize wandb run: {e}")
 
     return logging_output
 
@@ -344,6 +387,7 @@ def main():
     distiller = Distiller(model_args, training_args, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     collator = DistillationCollator(
         student_processor=distiller.get_student_processor(),
+        teacher_processor=distiller.get_teacher_processor(),
         model_args=model_args,
         data_args=data_args,
         training_args=training_args,

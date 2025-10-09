@@ -57,6 +57,8 @@ class LlavaOnevisionModelOutputWithPast(BaseModelOutputWithPast):
 
     image_hidden_states: Optional[torch.FloatTensor] = None
     video_hidden_states: Optional[torch.FloatTensor] = None
+    batch_image_embeds: Optional[List[torch.FloatTensor]] = None
+    
 
 
 @dataclass
@@ -87,6 +89,7 @@ class LlavaOnevisionCausalLMOutputWithPast(ModelOutput):
     attentions: Optional[tuple[torch.FloatTensor]] = None
     image_hidden_states: Optional[torch.FloatTensor] = None
     video_hidden_states: Optional[torch.FloatTensor] = None
+    batch_image_embeds: Optional[List[torch.FloatTensor]] = None
 
 
 class LlavaOnevisionPreTrainedModel(PreTrainedModel):
@@ -530,6 +533,7 @@ class LlavaOnevisionModel(LlavaOnevisionPreTrainedModel):
             inputs_embeds = self.get_input_embeddings()(input_ids)
 
         # Images are processed with Anyres
+        batch_image_embeds = None
         if pixel_values is not None:
             image_features = self.get_image_features(
                 pixel_values,
@@ -538,6 +542,9 @@ class LlavaOnevisionModel(LlavaOnevisionPreTrainedModel):
                 vision_feature_select_strategy=vision_feature_select_strategy,
                 batch_num_images=batch_num_images,
             )
+            # print("Number of images processed:", len(image_features))
+            # print(f"Image feature shapes before concat: {[f.shape for f in image_features]}")
+            batch_image_embeds = image_features
             image_features = torch.cat(image_features, dim=0)
             image_features = image_features.to(inputs_embeds.device, inputs_embeds.dtype)
             special_image_mask, _ = self.get_placeholder_mask(
@@ -585,6 +592,7 @@ class LlavaOnevisionModel(LlavaOnevisionPreTrainedModel):
             attentions=outputs.attentions,
             image_hidden_states=image_features if pixel_values is not None else None,
             video_hidden_states=video_features if pixel_values_videos is not None else None,
+            batch_image_embeds=batch_image_embeds if pixel_values is not None else None,
         )
 
     def get_video_features(

@@ -106,28 +106,41 @@ class MMEBModel(nn.Module):
             # print(f"Pixels values shape: {input['pixel_values'].shape if 'pixel_values' in input else None}")
             hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
             # add for image feature
-            if hasattr(hidden_states, 'image_hidden_states'):
-                image_features = hidden_states.image_hidden_states
-                print(f"Image features of LLaVa OV shape: {image_features.shape if image_features else None}")
+            if hasattr(hidden_states, 'batch_image_embeds'):
+                image_features = hidden_states.batch_image_embeds
+                # print(f"Image features of LLaVa OV shape: {image_features.shape if image_features is not None else None}")
+                # if image_features is not None:
+                #     for i in range(len(image_features)):
+                #         # print(f"Image features of LLaVa OV shape: {image_features[i].shape}")
+                # else: 
+                #     # print("No image features found in LLaVa OV output.")
             else: 
                 image_features = None
-            hidden_states = hidden_states.hidden_states[-1]
+            last_hidden_state = hidden_states.hidden_states[-1]
             attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
-            print(f"Attention matrix length: {len(attention_matrix) if attention_matrix else None}")
-            print(f"Attention matrix shape: {attention_matrix.shape if attention_matrix else None}")
-            pooled_output = self._pooling(hidden_states, input['attention_mask'])
+            # print(f"Last hidden state shape: {last_hidden_state.shape if last_hidden_state is not None else None}")
+            # print(f"Attention matrix length: {len(attention_matrix) if attention_matrix is not None else None}")
+            # print(f"Attention matrix shape: {attention_matrix[0].shape if attention_matrix is not None else None}")
+            pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
             return pooled_output, image_features, attention_matrix
         else:
             # import ipdb; ipdb.set_trace()
             hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
-            if hasattr(hidden_states, 'image_hidden_states'):
-                image_features = hidden_states.image_hidden_states
-                print(f"Image features of Qwen2VL shape: {image_features.shape if image_features else None}")
-            hidden_states = hidden_states.hidden_states[-1]
+            if hasattr(hidden_states, 'batch_image_embeds'):
+                image_features = hidden_states.batch_image_embeds
+                # if image_features is not None:
+                #     for i in range(len(image_features)):
+                #         print(f"Image features of Qwen2 VL shape: {image_features[i].shape}")
+                # else: 
+                #     print("No image features found in Qwen2 VL output.")
+            else: 
+                image_features = None
+            last_hidden_state = hidden_states.hidden_states[-1]
             attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
-            print(f"Attention matrix length: {len(attention_matrix) if attention_matrix else None}")
-            print(f"Attention matrix shape: {attention_matrix.shape if attention_matrix else None}")
-            pooled_output = self._pooling(hidden_states, input['attention_mask'])
+            # print(f"Last hidden state shape: {last_hidden_state.shape if last_hidden_state is not None else None}")
+            # print(f"Attention matrix length: {len(attention_matrix) if attention_matrix is not None else None}")
+            # print(f"Attention matrix shape: {attention_matrix[0].shape if attention_matrix is not None else None}")
+            pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
             return pooled_output, image_features, attention_matrix
 
     def _pooling(self, last_hidden_state, attention_mask):
@@ -209,7 +222,7 @@ class MMEBModel(nn.Module):
                 config=config,
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
-                use_flash_attn=True,
+                use_flash_attn=False,
                 trust_remote_code=True,
             )
             #! hardcoded. Also check hardcoded values in processor
@@ -315,7 +328,7 @@ class MMEBModel(nn.Module):
                 config=config,
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
-                use_flash_attn=True,
+                use_flash_attn=False,
                 trust_remote_code=True,
             )
             # import ipdb; ipdb.set_trace()
@@ -394,8 +407,8 @@ class MMEBModel(nn.Module):
 
     def forward(self, qry: Dict[str, Tensor] = None, tgt: Dict[str, Tensor] = None, *args, **kwargs):
         # print(f"qry keys: {qry.keys() if qry else None}, tgt keys: {tgt.keys() if tgt else None}")
-        qry_reps, _, _ = self.encode_input(qry) if qry else None  # (bsz_per_device, dim)
-        tgt_reps, _, _ = self.encode_input(tgt) if tgt else None # (bsz_per_device, dim)
+        qry_reps, _, _ = self.encode_input(qry) if qry else (None, None, None)  # (bsz_per_device, dim)
+        tgt_reps, _, _ = self.encode_input(tgt) if tgt else (None, None, None) # (bsz_per_device, dim)
 
         if qry_reps is None or tgt_reps is None:
             return {"qry_reps": qry_reps, "tgt_reps": tgt_reps}

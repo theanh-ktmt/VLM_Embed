@@ -304,8 +304,8 @@ class Qwen2VLPreTrainedModel(PreTrainedModel):
     supports_gradient_checkpointing = True
     _no_split_modules = ["Qwen2VLDecoderLayer", "Qwen2VLVisionBlock"]
     _skip_keys_device_placement = "past_key_values"
-    _supports_flash_attn_2 = True
-    _supports_sdpa = True
+    _supports_flash_attn_2 = False
+    _supports_sdpa = False
     _supports_cache_class = True
     _supports_static_cache = True
 
@@ -1280,7 +1280,8 @@ class Qwen2VLCausalLMOutputWithPast(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
     attentions: Optional[Tuple[torch.FloatTensor]] = None
     rope_deltas: Optional[torch.LongTensor] = None
-    image_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    # image_hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    batch_image_embeds: Optional[List[torch.FloatTensor]] = None
 
 
 QWEN2_VL_INPUTS_DOCSTRING = r"""
@@ -1603,6 +1604,7 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel, GenerationMixin):
         ```"""
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        # print(f"output_attentions: {output_attentions}")
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
@@ -1632,6 +1634,7 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel, GenerationMixin):
             image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
             '''
+            batch_image_embeds = None
             if pixel_values is not None:
                 image_grid_thw = [image_grid_thw[i] if image_grid_thw[i] is not None and image_grid_thw[i].sum() > 0 else None for i in range(bsz)]
                 idx_w_image = [mid for mid, isize in enumerate(image_grid_thw) if isize is not None]
@@ -1665,8 +1668,26 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel, GenerationMixin):
                         )
                         image_embeds = image_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
                         inputs_embeds_w_image = inputs_embeds_w_image.masked_scatter(image_mask, image_embeds)
+
                         # print(f"inputs_embeds_w_image shape", inputs_embeds_w_image.shape)
                         merged_inputs_embeds.append(inputs_embeds_w_image)
+                        # Prepare batch-wise image embeddings
+                        batch_image_embeds = []
+                        cur = 0
+                        hidden_dim = image_embeds.shape[-1]
+                        # print(f"image_embeds total shape: {image_embeds.shape}, n_image_tokens: {n_image_tokens}, n_image_features: {n_image_features}, hidden_dim: {hidden_dim}")
+
+                        for b in range(image_mask.size(0)):  # lặp qua từng sample trong batch
+                            # Đếm số image tokens trong sample b
+                            num_image_tokens = (image_mask[b, :, 0].sum()).item()
+                            
+                            # Cắt ra phần tương ứng trong image_embeds
+                            sample_embeds = image_embeds[cur : cur + num_image_tokens]
+                            
+                            batch_image_embeds.append(sample_embeds)
+                            # print(f"Sample {b}: {num_image_tokens} image tokens, Embeds shape: {sample_embeds.shape}")
+                            
+                            cur += num_image_tokens
                     if len(idx_wo_image):
                         inputs_embeds_wo_image = torch.stack([inputs_embeds[i] for i in idx_wo_image])
                         merged_inputs_embeds.append(inputs_embeds_wo_image)
@@ -1797,6 +1818,7 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel, GenerationMixin):
         #     output = (logits,) + outputs[1:]
         #     return (loss,) + output if loss is not None else output
         logits = None
+        # print(f"attentions: {outputs.attentions}")
 
         return Qwen2VLCausalLMOutputWithPast(
             loss=loss,
@@ -1804,7 +1826,7 @@ class Qwen2VLForConditionalGeneration(Qwen2VLPreTrainedModel, GenerationMixin):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            image_hidden_states=image_embeds if pixel_values is not None else None,
+            batch_image_embeds=batch_image_embeds if pixel_values is not None else None,
             rope_deltas=self.rope_deltas,
         )
 
