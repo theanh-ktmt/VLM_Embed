@@ -60,8 +60,8 @@ class ProposalLossWithProj(nn.Module):
         
         teacher_qry_input = input_data['teacher_inputs']['qry']
         teacher_pos_input = input_data['teacher_inputs']['pos']
-        num_text_qry_tokens = ((teacher_qry_input['input_ids'] < 151652) | (teacher_qry_input['input_ids'] > 151656)).sum(dim=1)
-        num_text_pos_tokens = ((teacher_pos_input['input_ids'] < 151652) | (teacher_pos_input['input_ids'] > 151656)).sum(dim=1)
+        num_text_qry_tokens = (((teacher_qry_input['input_ids'] < 151652) | (teacher_qry_input['input_ids'] > 151656)) & (teacher_qry_input['input_ids'] != 151643)).sum(dim=1)
+        num_text_pos_tokens = (((teacher_pos_input['input_ids'] < 151652) | (teacher_pos_input['input_ids'] > 151656)) & (teacher_pos_input['input_ids'] != 151643)).sum(dim=1)
         batch_size = student_qry_input['input_ids'].size(0)
         with torch.no_grad():
             teacher_model.eval()
@@ -112,12 +112,12 @@ class ProposalLossWithProj(nn.Module):
         self.attn_loss = self.compute_attention_loss(teacher_qry_attention, teacher_pos_attention, 
                                                      student_qry_attention, student_pos_attention, 
                                                      input_data, topk_token_text_results, k_layer=3)
-        total_loss = contrastive_loss + self.kd_loss_weight *(self.kd_loss_mse + 0.3 * self.attn_loss)
+        total_loss = (1 - self.kd_loss_weight) * contrastive_loss + self.kd_loss_weight *(self.kd_loss_mse + 0.1 * self.attn_loss)
         # total_loss = contrastive_loss + self.kd_loss_weight *(0.1 * self.attn_loss)
         return {
             "loss": total_loss, 
             "contrastive_loss": contrastive_loss,
-            "kd_loss": self.kd_loss_mse + 0.3 * self.attn_loss,
+            "kd_loss": self.kd_loss_mse + 0.1 * self.attn_loss,
             "attn_loss": self.attn_loss,
             "kd_loss_mse": self.kd_loss_mse,
             # "kd_loss": 0.1 * self.attn_loss,
@@ -126,6 +126,7 @@ class ProposalLossWithProj(nn.Module):
     def extract_top_k_text_token(self, input_data, teacher_qry_attention, teacher_pos_attention, num_text_qry_tokens, num_text_pos_tokens):
         VISION_START_TOKEN_ID = 151652
         VISION_END_TOKEN_ID = 151656
+        BOS_TOKEN_ID = 151643
         teacher_qry_input_ids = input_data['teacher_inputs']['qry']['input_ids']
         teacher_pos_input_ids = input_data['teacher_inputs']['pos']['input_ids']
         batch_size, qry_len = teacher_qry_input_ids.size()
@@ -145,8 +146,8 @@ class ProposalLossWithProj(nn.Module):
             qry_imp = qry_importance[i]
             pos_imp = pos_importance[i]
             
-            qry_mask = (qry_ids < VISION_START_TOKEN_ID) | (qry_ids > VISION_END_TOKEN_ID)
-            pos_mask = (pos_ids < VISION_START_TOKEN_ID) | (pos_ids > VISION_END_TOKEN_ID)
+            qry_mask = ((qry_ids < VISION_START_TOKEN_ID) | (qry_ids > VISION_END_TOKEN_ID)) & (qry_ids != BOS_TOKEN_ID)
+            pos_mask = ((pos_ids < VISION_START_TOKEN_ID) | (pos_ids > VISION_END_TOKEN_ID)) & (pos_ids != BOS_TOKEN_ID)
 
             qry_imp = qry_imp * qry_mask.float()
             pos_imp = pos_imp * pos_mask.float()
@@ -231,12 +232,16 @@ class ProposalLossWithProj(nn.Module):
         student_layer_num = len(student_qry_attention)
         layer_per_block = teacher_layer_num // student_layer_num
 
-        new_teacher_attns = [teacher_qry_attention[i * layer_per_block + layer_per_block - 1] for i in range(student_layer_num)]
-        teacher_qry_attention = new_teacher_attns[-k_layer:]
-        new_teacher_attns = [teacher_pos_attention[i * layer_per_block + layer_per_block - 1] for i in range(student_layer_num)]
-        teacher_pos_attention = new_teacher_attns[-k_layer:]
-        student_last_k_qry = student_qry_attention[-k_layer:]
-        student_last_k_pos = student_pos_attention[-k_layer:]
+        # new_teacher_attns = [teacher_qry_attention[i * layer_per_block + layer_per_block - 1] for i in range(student_layer_num)]
+        # teacher_qry_attention = new_teacher_attns[-k_layer:]
+        # new_teacher_attns = [teacher_pos_attention[i * layer_per_block + layer_per_block - 1] for i in range(student_layer_num)]
+        # teacher_pos_attention = new_teacher_attns[-k_layer:]
+        # student_last_k_qry = student_qry_attention[-k_layer:]
+        # student_last_k_pos = student_pos_attention[-k_layer:]
+        teacher_qry_last = teacher_qry_attention[-1]
+        teacher_pos_last = teacher_pos_attention[-1]
+        student_qry_last = student_qry_attention[-1]
+        student_pos_last = student_pos_attention[-1]
 
         teacher_qry_first = teacher_qry_attention[0]
         teacher_pos_first = teacher_pos_attention[0]
@@ -270,25 +275,39 @@ class ProposalLossWithProj(nn.Module):
             sq_mean = torch.where(sq_mean <= -1e2, torch.zeros_like(sq_mean), sq_mean)
             tp_mean = torch.where(tp_mean <= -1e2, torch.zeros_like(tp_mean), tp_mean)
             sp_mean = torch.where(sp_mean <= -1e2, torch.zeros_like(sp_mean), sp_mean)
-
+            # print(f"Shape of means for instance {i}: tq_mean {tq_mean.shape}, tp_mean {tp_mean.shape}, sq_mean {sq_mean.shape}, sp_mean {sp_mean.shape}")
             # calculate CKA loss
             att_loss = cka_fn_loss(tq_mean, sq_mean) + cka_fn_loss(tp_mean, sp_mean)
             att_loss_total += att_loss / 2
             
-            for teacher_qry_att, teacher_pos_att, student_qry_att, student_pos_att in zip(teacher_qry_attention, teacher_pos_attention, student_last_k_qry, student_last_k_pos):
-                tq_mean = teacher_qry_att[i, :, qry_topk_idx, :].mean(dim=0)
-                tp_mean = teacher_pos_att[i, :, pos_topk_idx, :].mean(dim=0)
-                sq_mean = student_qry_att[i, :, s_qry_topk_idx, :].mean(dim=0)
-                sp_mean = student_pos_att[i, :, s_pos_topk_idx, :].mean(dim=0)
+            # for teacher_qry_att, teacher_pos_att, student_qry_att, student_pos_att in zip(teacher_qry_attention, teacher_pos_attention, student_last_k_qry, student_last_k_pos):
+            #     tq_mean = teacher_qry_att[i, :, qry_topk_idx, :].mean(dim=0)
+            #     tp_mean = teacher_pos_att[i, :, pos_topk_idx, :].mean(dim=0)
+            #     sq_mean = student_qry_att[i, :, s_qry_topk_idx, :].mean(dim=0)
+            #     sp_mean = student_pos_att[i, :, s_pos_topk_idx, :].mean(dim=0)
                 
-                # mask -inf
-                tq_mean = torch.where(tq_mean <= -1e2, torch.zeros_like(tq_mean), tq_mean)
-                sq_mean = torch.where(sq_mean <= -1e2, torch.zeros_like(sq_mean), sq_mean)
-                tp_mean = torch.where(tp_mean <= -1e2, torch.zeros_like(tp_mean), tp_mean)
-                sp_mean = torch.where(sp_mean <= -1e2, torch.zeros_like(sp_mean), sp_mean)
+            #     # mask -inf
+            #     tq_mean = torch.where(tq_mean <= -1e2, torch.zeros_like(tq_mean), tq_mean)
+            #     sq_mean = torch.where(sq_mean <= -1e2, torch.zeros_like(sq_mean), sq_mean)
+            #     tp_mean = torch.where(tp_mean <= -1e2, torch.zeros_like(tp_mean), tp_mean)
+            #     sp_mean = torch.where(sp_mean <= -1e2, torch.zeros_like(sp_mean), sp_mean)
 
-                att_loss = cka_fn_loss(tq_mean, sq_mean) + cka_fn_loss(tp_mean, sp_mean)
-                att_loss_total += att_loss / 2
+            #     att_loss = cka_fn_loss(tq_mean, sq_mean) + cka_fn_loss(tp_mean, sp_mean)
+            #     att_loss_total += att_loss / 2
+            
+            tq_mean = teacher_qry_last[i, :, qry_topk_idx, :].mean(dim=0)
+            tp_mean = teacher_pos_last[i, :, pos_topk_idx, :].mean(dim=0)
+            sq_mean = student_qry_last[i, :, s_qry_topk_idx, :].mean(dim=0)
+            sp_mean = student_pos_last[i, :, s_pos_topk_idx, :].mean(dim=0)
+            # print(tq_mean.shape, tp_mean.shape, sq_mean.shape, sp_mean.shape)
+            # print(qry_topk_idx, pos_topk_idx, s_qry_topk_idx, s_pos_topk_idx)
+            # mask -inf
+            tq_mean = torch.where(tq_mean <= -1e2, torch.zeros_like(tq_mean), tq_mean)
+            sq_mean = torch.where(sq_mean <= -1e2, torch.zeros_like(sq_mean), sq_mean)
+            tp_mean = torch.where(tp_mean <= -1e2, torch.zeros_like(tp_mean), tp_mean)
+            sp_mean = torch.where(sp_mean <= -1e2, torch.zeros_like(sp_mean), sp_mean)
+            att_loss = cka_fn_loss(tq_mean, sq_mean) + cka_fn_loss(tp_mean, sp_mean)
+            att_loss_total += att_loss / 2
         # print("Total attention loss before averaging:", att_loss_total.item())
         return att_loss_total / batch_size
     
