@@ -167,90 +167,90 @@ def finetune(
         
         train_iter = iter(train_dataloader)
         
-        while True:
-            global_batch = []
-            global_st_time = time.time() 
-            losses, contrastive_losses, kd_losses = [], [], []
-            attn_losses, kd_mse_losses = [], []
-            for i in range(training_args.gradient_accumulation_steps):
-                try:
-                    batch = next(train_iter)
-                    global_batch.append(batch)
-                except StopIteration:
-                    end_epoch = True
-                    break
+        # while True:
+        #     global_batch = []
+        #     global_st_time = time.time() 
+        #     losses, contrastive_losses, kd_losses = [], [], []
+        #     attn_losses, kd_mse_losses = [], []
+        #     for i in range(training_args.gradient_accumulation_steps):
+        #         try:
+        #             batch = next(train_iter)
+        #             global_batch.append(batch)
+        #         except StopIteration:
+        #             end_epoch = True
+        #             break
             
-            if end_epoch:
-                break
+        #     if end_epoch:
+        #         break
             
-            for batch in global_batch:
-                st_time = time.time()
-                # print(f"Teacher_qry_reps dtype: {teacher_qry_reps.dtype}, device: {teacher_qry_reps.device}")
-                with accelerator.accumulate(distiller):
-                    loss_dict = distiller(criterion, batch)
+        #     for batch in global_batch:
+        #         st_time = time.time()
+        #         # print(f"Teacher_qry_reps dtype: {teacher_qry_reps.dtype}, device: {teacher_qry_reps.device}")
+        #         with accelerator.accumulate(distiller):
+        #             loss_dict = distiller(criterion, batch)
                 
-                    loss = loss_dict['loss'] / training_args.gradient_accumulation_steps
-                    accelerator.backward(loss)
-                    contrastive_loss = loss_dict['contrastive_loss']
-                    kd_loss = loss_dict['kd_loss']
-                    attn_loss = loss_dict.get('attn_loss', torch.tensor(0.0))
-                    kd_mse_loss = loss_dict.get('kd_loss_mse', torch.tensor(0.0))
+        #             loss = loss_dict['loss'] / training_args.gradient_accumulation_steps
+        #             accelerator.backward(loss)
+        #             contrastive_loss = loss_dict['contrastive_loss']
+        #             kd_loss = loss_dict['kd_loss']
+        #             attn_loss = loss_dict.get('attn_loss', torch.tensor(0.0))
+        #             kd_mse_loss = loss_dict.get('kd_loss_mse', torch.tensor(0.0))
 
-                    losses.append(loss_dict['loss'].detach().item())
-                    contrastive_losses.append(contrastive_loss.detach().item())
-                    kd_losses.append(kd_loss.detach().item())
-                    attn_losses.append(attn_loss.detach().item())
-                    kd_mse_losses.append(kd_mse_loss.detach().item())
-                    logging_output['micro_step_time'].append(time.time() - st_time)
+        #             losses.append(loss_dict['loss'].detach().item())
+        #             contrastive_losses.append(contrastive_loss.detach().item())
+        #             kd_losses.append(kd_loss.detach().item())
+        #             attn_losses.append(attn_loss.detach().item())
+        #             kd_mse_losses.append(kd_mse_loss.detach().item())
+        #             logging_output['micro_step_time'].append(time.time() - st_time)
                 
-            if accelerator.sync_gradients:
-                if training_args.max_grad_norm is not None and training_args.max_grad_norm > 0:
-                    accelerator.clip_grad_norm_(distiller.student.parameters(), training_args.max_grad_norm)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                torch.cuda.empty_cache()
+        #     if accelerator.sync_gradients:
+        #         if training_args.max_grad_norm is not None and training_args.max_grad_norm > 0:
+        #             accelerator.clip_grad_norm_(distiller.student.parameters(), training_args.max_grad_norm)
+        #         optimizer.step()
+        #         lr_scheduler.step()
+        #         optimizer.zero_grad()
+        #         torch.cuda.empty_cache()
             
-            step += 1
-            epoch_step += 1
-            logging_output['global_step'] = step
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+        #     step += 1
+        #     epoch_step += 1
+        #     logging_output['global_step'] = step
+        #     if torch.cuda.is_available():
+        #         torch.cuda.synchronize()
             
-            batch_loss = sum(losses)/len(losses)
-            batch_contrastive_loss = sum(contrastive_losses)/len(contrastive_losses)
-            batch_kd_loss = sum(kd_losses)/len(kd_losses)
-            batch_attn_loss = sum(attn_losses)/len(attn_losses)
-            batch_kd_mse_loss = sum(kd_mse_losses)/len(kd_mse_losses)
+        #     batch_loss = sum(losses)/len(losses)
+        #     batch_contrastive_loss = sum(contrastive_losses)/len(contrastive_losses)
+        #     batch_kd_loss = sum(kd_losses)/len(kd_losses)
+        #     batch_attn_loss = sum(attn_losses)/len(attn_losses)
+        #     batch_kd_mse_loss = sum(kd_mse_losses)/len(kd_mse_losses)
 
-            epoch_loss += sum(losses)
-            epoch_contrastive_loss += sum(contrastive_losses)
-            epoch_kd_loss += sum(kd_losses)
+        #     epoch_loss += sum(losses)
+        #     epoch_contrastive_loss += sum(contrastive_losses)
+        #     epoch_kd_loss += sum(kd_losses)
             
-            if accelerator.is_main_process and step % training_args.logging_steps == 0:
-                progress_bar.set_postfix({
-                    "loss": f"{batch_loss:.4f}",
-                    "contrastive_loss": f"{batch_contrastive_loss:.4f}",
-                    "kd_loss": f"{batch_kd_loss:.4f}",
-                    "lr": f"{optimizer.param_groups[0]['lr']:.6f}",
-                    "attn_loss": f"{batch_attn_loss:.4f}",
-                    "kd_mse_loss": f"{batch_kd_mse_loss:.4f}",
-                })
-                progress_bar.update(1)
-                if "wandb" in training_args.report_to:
-                    wandb.log({
-                        "train/loss": batch_loss,
-                        "train/contrastive_loss": batch_contrastive_loss,
-                        "train/kd_loss": batch_kd_loss,
-                        "train/attn_loss": batch_attn_loss,
-                        "train/kd_mse_loss": batch_kd_mse_loss,
-                        "train/lr": optimizer.param_groups[0]['lr'],
-                        "train/epoch": epoch + 1,
-                        "train/global_step": step,
-                    })
+        #     if accelerator.is_main_process and step % training_args.logging_steps == 0:
+        #         progress_bar.set_postfix({
+        #             "loss": f"{batch_loss:.4f}",
+        #             "contrastive_loss": f"{batch_contrastive_loss:.4f}",
+        #             "kd_loss": f"{batch_kd_loss:.4f}",
+        #             "lr": f"{optimizer.param_groups[0]['lr']:.6f}",
+        #             "attn_loss": f"{batch_attn_loss:.4f}",
+        #             "kd_mse_loss": f"{batch_kd_mse_loss:.4f}",
+        #         })
+        #         progress_bar.update(1)
+        #         if "wandb" in training_args.report_to:
+        #             wandb.log({
+        #                 "train/loss": batch_loss,
+        #                 "train/contrastive_loss": batch_contrastive_loss,
+        #                 "train/kd_loss": batch_kd_loss,
+        #                 "train/attn_loss": batch_attn_loss,
+        #                 "train/kd_mse_loss": batch_kd_mse_loss,
+        #                 "train/lr": optimizer.param_groups[0]['lr'],
+        #                 "train/epoch": epoch + 1,
+        #                 "train/global_step": step,
+        #             })
                     
-                    logging_output['micro_step_time'] = []
-                    logging_output['step_time'] = []
+        #             logging_output['micro_step_time'] = []
+        #             logging_output['step_time'] = []
         # End of epoch
         if accelerator.is_main_process:
             avg_epoch_loss = epoch_loss / max(1, epoch_step)
@@ -308,10 +308,14 @@ def finetune(
                 #     hub_repo_name = f"{training_args.hub_model_id}-epoch{epoch + 1}"
                 student_config = AutoConfig.from_pretrained(model_args.model_name) if model_args.model_name else None
                 tokenizer = AutoTokenizer.from_pretrained(model_args.model_name) if model_args.model_name else None
-                processor = AutoProcessor.from_pretrained(model_args.model_name) if model_args.model_name else None
+
                 student_config.save_pretrained(ckpt_dir)
                 tokenizer.save_pretrained(ckpt_dir)
-                processor.save_pretrained(ckpt_dir)
+                try:   
+                    processor = AutoProcessor.from_pretrained(model_args.model_name) if model_args.model_name else None
+                    processor.save_pretrained(ckpt_dir)
+                except Exception as e:
+                    print_rank(f"Error saving processor: {e}. No processor saved.")
         print_rank(f"Epoch {epoch + 1} finished.")
     total_time = time.time() - start_time
     print_rank(f"Training completed in {total_time/3600:.2f} hours")
@@ -339,10 +343,13 @@ def finetune(
         if model_args.model_name:
             student_config = AutoConfig.from_pretrained(model_args.model_name)
             tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-            processor = AutoProcessor.from_pretrained(model_args.model_name)
+            try:
+                processor = AutoProcessor.from_pretrained(model_args.model_name)
+                processor.save_pretrained(final_ckpt_dir)
+            except Exception as e:
+                print_rank(f"Error saving processor: {e}. No processor saved.")
             student_config.save_pretrained(final_ckpt_dir)
             tokenizer.save_pretrained(final_ckpt_dir)
-            processor.save_pretrained(final_ckpt_dir)
 
         if "wandb" in training_args.report_to:
             wandb.finish()
