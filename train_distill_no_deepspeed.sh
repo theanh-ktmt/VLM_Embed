@@ -10,7 +10,7 @@ TRAIN_SCRIPT="train_distill_no_deepspeed.py"
 # Dùng torchrun để khởi chạy
 # =========================================================================
 torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
-    --model_name "llava-hf/llava-onevision-qwen2-0.5b-ov-hf" \
+    --model_name "apple/FastVLM-0.5B" \
     --teacher_model_name "raghavlite/B3_Qwen2_2B" \
     --lora True \
     --teacher_lora True \
@@ -18,15 +18,15 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --teacher_lora_r 8 \
     --teacher_pooling "eos" \
     --teacher_backbone "qwen2_vl" \
-    --model_backbone "llava_onevision" \
+    --model_backbone "llava_qwen2" \
     --pooling "eos" \
     --dataset_name "TIGER-Lab/MMEB-train" \
-    --subset_name "HatefulMemes" "ImageNet_1K" \
+    --subset_name "HatefulMemes"  \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
     --output_dir "training/no_deepspeed_propose_kd_weight" \
-    --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 4 \
+    --per_device_train_batch_size 16 \
+    --gradient_accumulation_steps 2 \
     --learning_rate 1e-5 \
     --num_train_epochs 1 \
     --bf16 \

@@ -130,7 +130,7 @@ def finetune(
     if "wandb" in training_args.report_to and accelerator.is_main_process:
         print("Initialized wandb")
         wandb.init(
-            project="vlm_distillation", 
+            project="vlm_distillation_propose_kd_weight", 
             name=model_args.model_backbone, 
             config={
                 "learning_rate": training_args.learning_rate,
@@ -209,6 +209,7 @@ def finetune(
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
+                torch.cuda.empty_cache()
             
             step += 1
             epoch_step += 1

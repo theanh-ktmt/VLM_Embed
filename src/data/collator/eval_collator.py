@@ -5,7 +5,7 @@ from src.arguments import DataArguments, ModelArguments
 import torch
 from qwen_vl_utils import smart_resize
 from PIL import Image
-from src.model.processor import LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, PHI3V, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, process_vlm_inputs_fns, INTERN_VL3, LLAVA_ONEVISION
+from src.model.processor import LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, PHI3V, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, process_vlm_inputs_fns, INTERN_VL3, LLAVA_ONEVISION, LLAVA_QWEN2
 
 from src.utils import print_rank, print_master
 from src.model.processor import process_vlm_inputs_fns
@@ -33,6 +33,9 @@ class EvalCollator:
             inputs = process_vlm_inputs_fns[self.model_args.model_backbone](examples,
                                             processor = self.processor,
                                             max_length = self.data_args.max_len)
+        elif(self.model_args.model_backbone==LLAVA_QWEN2):
+            inputs = process_vlm_inputs_fns[self.model_args.model_backbone](examples,
+                                            processor = self.processor)
         elif(self.model_args.model_backbone!=INTERN_VL3):
             inputs = process_vlm_inputs_fns[self.model_args.model_backbone](examples,
                                             processor = self.processor,

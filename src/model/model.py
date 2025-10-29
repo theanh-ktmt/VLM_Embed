@@ -2,11 +2,11 @@ from typing import Dict, Optional
 import torch
 import torch.distributed as dist
 from torch import nn, Tensor
-from transformers import PreTrainedModel, AutoModelForCausalLM, AutoConfig
+from transformers import PreTrainedModel, AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from peft import LoraConfig, get_peft_model, PeftModel
 from src.arguments import ModelArguments, TrainingArguments
 from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, \
-    backbone2model, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, LLAVA_ONEVISION
+    backbone2model, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, LLAVA_ONEVISION, LLAVA_QWEN2
 
 from src.arguments import ModelArguments
 from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, INTERNVIDEO2, \
@@ -17,6 +17,9 @@ from src.model.vlm_backbone.lamra.lamra_inference import LamRAQwen2VL
 from src.model.vlm_backbone.phi3_v.modeling_phi3_v import Phi3VForCausalLM
 from src.model.vlm_backbone.llava_next import LlavaNextForConditionalGeneration
 from src.model.vlm_backbone.llava_onevision import LlavaOnevisionForConditionalGeneration
+from src.model.llava.model import *
+from src.model.llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+
 from peft import PeftConfig
 from unittest.mock import patch
 
@@ -100,11 +103,24 @@ class MMEBModel(nn.Module):
             pooled_output = self._pooling(hidden_states, input['attention_mask'])
             return pooled_output
         elif getattr(self, "model_backbone", None) in [LLAVA_NEXT, LLAVA_ONEVISION]:
+            print("Encoding input for LLAVA model backbone")
             if hasattr(input, 'pixel_values'):
                 input['pixel_values'] = input['pixel_values'].squeeze(1)
                 input['image_sizes'] = input['image_sizes'].squeeze(1)
             hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
             # add for image feature
+            if hasattr(hidden_states, 'batch_image_embeds'):
+                image_features = hidden_states.batch_image_embeds
+            else: 
+                image_features = None
+            last_hidden_state = hidden_states.hidden_states[-1]
+            attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
+            pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
+            print("len image features:", None if image_features is None else image_features.shape)
+            return pooled_output, image_features, attention_matrix
+        elif getattr(self, "model_backbone", None) == LLAVA_QWEN2:
+            # print("Encoding input for FastVLM model backbone")
+            hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
             if hasattr(hidden_states, 'batch_image_embeds'):
                 image_features = hidden_states.batch_image_embeds
             else: 
@@ -154,6 +170,7 @@ class MMEBModel(nn.Module):
 
 
         model_backbone = get_backbone_name(hf_config=config)
+        setattr(model_args, 'model_backbone', model_backbone)
         print_master(f'Loading backbone [{model_backbone}] from {model_args.model_name}')
         # Loading the base model
         if model_backbone == PHI3V:
@@ -229,8 +246,16 @@ class MMEBModel(nn.Module):
                 lm_skip_layer=lm_skip_layer,
                 vis_skip_layer=vis_skip_layer,
             )
-
-
+        
+        elif model_backbone in [LLAVA_QWEN2]:
+            config._attn_implementation = "eager"
+            base_model = LlavaQwen2ForCausalLM.from_pretrained(
+                model_args.model_name,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.bfloat16,
+                config=config,
+                **kwargs
+            )
         else:
             config.use_cache = False
             base_model = cls.TRANSFORMER_CLS.from_pretrained(

@@ -47,7 +47,7 @@ def process_image(image, resolution, max_dim=1344):
     elif resolution == "mid":
         target_max = 672
     elif resolution == "low":
-        target_max = 256
+        target_max = 384
     else:
         target_max = max_dim
 
@@ -97,7 +97,7 @@ class Distiller(nn.Module):
     def _load_student(self):
         print("Load student with lora rank:", self.model_args.lora_r)
         print("Student use lora:", self.model_args.lora)
-        student = MMEBModel.build(self.model_args, is_trainable=True)
+        student = MMEBModel.build(self.model_args)
         print("Student model built.")
         return student 
     

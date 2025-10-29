@@ -24,6 +24,9 @@ from src.model.vlm_backbone.qwen2_vl_tokenselection import \
     Qwen2VLForConditionalGeneration as Qwen2VLTokenSelectionForConditionalGeneration, \
     Qwen2VLProcessor as Qwen2VLTokenSelectionProcessor
 from src.model.vlm_backbone.internvideo2.modeling_internvideo2 import InternVideo2_Stage2
+
+from src.model.llava.model.language_model.llava_qwen import LlavaQwen2ForCausalLM
+from src.model.llava.processing_fastvlm import FastVLMProcessor
 from transformers import AutoTokenizer, AutoModel
 from peft import PeftConfig
 
@@ -46,6 +49,7 @@ INTERNVIDEO2 = 'internvideo2'
 GME = 'gme'  # QWEN2-VL
 LamRA = 'lamra'  # QWEN2-VL
 COLPALI = 'colpali'  # PaliGemma-3B
+LLAVA_QWEN2 = 'llava_qwen2'
 MODEL2BACKBONE = {  # keys are from hf_config.model_type or manually added if not provided
     'phi3_v': PHI3V,
     'llava_next': LLAVA_NEXT,
@@ -59,7 +63,8 @@ MODEL2BACKBONE = {  # keys are from hf_config.model_type or manually added if no
     'internvideo2': INTERNVIDEO2,
     'gme': GME, 
     'lamra': LamRA,
-    'colpali': COLPALI
+    'colpali': COLPALI,
+    'llava_qwen2': LLAVA_QWEN2
 }
 SUPPORTED_MODELS = set(MODEL2BACKBONE.keys())
 
@@ -76,6 +81,7 @@ VLM_IMAGE_TOKENS = {
     LamRA: "<|image_pad|>",
     INTERNVIDEO2: "",
     COLPALI: "",
+    LLAVA_QWEN2: "<image>",
 }
 
 VLM_VIDEO_TOKENS = {
@@ -89,6 +95,7 @@ VLM_VIDEO_TOKENS = {
     GME: "<|video_pad|>",
     LamRA: "<|video_pad|>",
     INTERNVIDEO2: "",
+    LLAVA_QWEN2: ""
 }
 
 backbone2model = {
@@ -101,6 +108,7 @@ backbone2model = {
     QWEN2_VL_TOKENSELECTION: Qwen2VLTokenSelectionForConditionalGeneration,
     QWEN2_5_VL_TOKENSELECTION: Qwen2_5_VL_TokenSelectionForConditionalGeneration,
     INTERNVIDEO2: InternVideo2_Stage2,
+    LLAVA_QWEN2: LlavaQwen2ForCausalLM
 }
 
 
@@ -236,6 +244,18 @@ def load_processor(model_args, data_args=None):
     elif model_args.model_backbone == COLPALI:
         from transformers import AutoProcessor
         processor = ColPaliProcessor.from_pretrained(model_args.model_name)
+    elif model_args.model_backbone == LLAVA_QWEN2:
+        print("Processor load here for LLAVA-QWEN2")
+        from transformers import CLIPImageProcessor, AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
+        image_processor = CLIPImageProcessor(crop_size={"height": 1024, "width": 1024},
+                                             image_mean=[0.0, 0.0, 0.0],
+                                             image_std=[1.0, 1.0, 1.0],
+                                             size={"shortest_edge": 1024})
+        processor = FastVLMProcessor(
+            image_processor=image_processor,
+            tokenizer=tokenizer
+        )
     else:
         from transformers import AutoProcessor
         processor = AutoProcessor.from_pretrained(
@@ -415,6 +435,14 @@ def Phi3V_process_fn(model_inputs: dict, processor, max_length=None):
         inputs['pixel_values'] = torch.zeros(input_ids.shape[0], 1)
         inputs['image_sizes'] = torch.ones(input_ids.shape[0], 1)
 
+    return inputs
+
+def FastVLM_process_fn(model_inputs: dict, processor: FastVLMProcessor, max_length=None):
+    texts, visual_inputs = model_inputs['text'], model_inputs['images']
+    inputs = processor(
+        images=visual_inputs,
+        texts=texts,
+    )
     return inputs
 
 
@@ -774,4 +802,5 @@ process_vlm_inputs_fns = {
     LamRA: Gme_process_fn,
     COLPALI: ColPali_process_fn,
     LLAVA_ONEVISION: Llava_ONEVISION_process_fn,
+    LLAVA_QWEN2: FastVLM_process_fn,
 }
