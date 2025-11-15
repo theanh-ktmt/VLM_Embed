@@ -24,6 +24,7 @@ from accelerate import Accelerator
 from huggingface_hub import HfApi, HfFolder, Repository, create_repo
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer, HfArgumentParser
 from transformers.integrations import HfDeepSpeedConfig
+from deepspeed.runtime.zero import GatheredParameters
 # Todo
 def get_optimizer_params(model, training_args):
     param_optimizer = list(model.named_parameters())
@@ -77,19 +78,20 @@ def push_to_hub(repo_name=None, token=None, commit_message="Upload model",
         return False
 
 
-def batch_to_device(batch, device):
-    if isinstance(batch, dict):
-        # Nếu là dictionary, gọi đệ quy cho từng value
-        return {k: batch_to_device(v, device) for k, v in batch.items()}
-    elif isinstance(batch, list):
-        # Nếu là list, gọi đệ quy cho từng phần tử
-        return [batch_to_device(v, device) for v in batch]
-    elif isinstance(batch, torch.Tensor):
-        # Nếu là tensor, chuyển nó lên device
-        return batch.to(device)
+def to_device(obj, device):
+    if obj is None:
+        return None
+    elif isinstance(obj, torch.Tensor):
+        return obj.to(device)
+    elif isinstance(obj, dict):
+        return {k: to_device(v, device) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        result = [to_device(v, device) for v in obj]
+        return tuple(result) if isinstance(obj, tuple) else result
     else:
-        # Giữ nguyên các kiểu dữ liệu khác (string, int, ...)
-        return batch
+        if hasattr(obj, 'to') and callable(obj.to):
+            return obj.to(device)
+        return obj
 
 def finetune(
     model_args: ModelArguments, 
@@ -101,6 +103,7 @@ def finetune(
     lr_scheduler: torch.optim.lr_scheduler._LRScheduler,
     collator: DistillationCollator,
     criterion: nn.Module,
+    device=None,
 ):
     print_rank("Start finetuning...")
     start_time = time.time()
@@ -158,7 +161,6 @@ def finetune(
     for n, p in model_engine.named_parameters():
         if p.requires_grad:
             total_trainable += p.numel()
-            print_rank(f"Trainable param: {n}, shape: {p.shape}, numel: {p.numel()}")
             try:
                 p.data = p.data.to(dtype=torch.bfloat16)
             except Exception as e:
@@ -168,8 +170,8 @@ def finetune(
     print_rank(f"Total trainable parameters: {total_trainable}")
     print_rank(f"model device: {next(model_engine.parameters()).device}")
     model_engine.train()
-    
-    if "wandb" in training_args.report_to and getattr(model_engine, "global_rank", 0) == 0:
+
+    if "wandb" in training_args.report_to and dist.get_rank() == 0:
         print("Initialized wandb")
         wandb.init(
             project="vlm_distillation", 
@@ -201,6 +203,7 @@ def finetune(
         epoch_step = 0
         epoch_loss, epoch_contrastive_loss, epoch_kd_loss = 0, 0, 0
         losses, contrastive_losses, kd_losses = [], [], []
+        kd_rkd_losses, ot_losses, kd_dtw_losses = [], [], []
         model_engine.train()
         
         if is_distributed and isinstance(train_dataloader.sampler, DistributedSampler):
@@ -221,7 +224,7 @@ def finetune(
             for _ in range(grad_accum):
                 try:
                     batch = next(train_iter)
-                    batch = batch_to_device(batch, model_engine.device)
+                    batch = to_device(batch, device)
                     global_batch.append(batch)
                 except StopIteration:
                     end_epoch = True
@@ -237,40 +240,47 @@ def finetune(
                 loss = loss_dict['loss']
                 model_engine.backward(loss)
                 
-                contrastive_loss = loss_dict['contrastive_loss']
-                kd_loss = loss_dict['kd_loss']
-                
-                losses.append(loss_dict['loss'].detach().item())
+                kd_loss = loss_dict.get('kd_loss', torch.tensor(0.0))
+                contrastive_loss = loss_dict.get('contrastive_loss', torch.tensor(0.0))
+                kd_rkd_loss = loss_dict.get('kd_loss_rkd', torch.tensor(0.0))
+                ot_loss = loss_dict.get('ot_loss', torch.tensor(0.0))
+                kd_dtw_loss = loss_dict.get('kd_loss_dtw', torch.tensor(0.0))
+
+                losses.append(loss.detach().item() * training_args.gradient_accumulation_steps)
                 contrastive_losses.append(contrastive_loss.detach().item())
                 kd_losses.append(kd_loss.detach().item())
-
+                kd_rkd_losses.append(kd_rkd_loss.detach().item())
+                ot_losses.append(ot_loss.detach().item())
+                kd_dtw_losses.append(kd_dtw_loss.detach().item())
+                
                 model_engine.step()
                 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
-                # try: 
-                #     if lr_scheduler is not None:
-                #         lr_scheduler.step()
-                # except Exception: 
-                #     pass 
                 step += 1
-            if getattr(model_engine, "global_rank", 0) == 0 and step % training_args.logging_steps == 0:
+            if dist.get_rank() == 0 and step % training_args.logging_steps == 0:
                 current_lr = None
                 try: 
-                    current_lr = lr_scheduler.get_last_lr()[0] if lr_scheduler is not None else None
+                    current_lr = optimizer.param_groups[0]['lr']
                 except Exception:
-                    print_rank("Cannot get learning rate from lr_scheduler")
+                    print_rank("Cannot get learning rate from optimizer")
                     current_lr = None
-                batch_loss = sum(losses) / len(losses) if len(losses) > 0 else 0
-                batch_contrastive_loss = sum(contrastive_losses) / len(contrastive_losses) if len(contrastive_losses) > 0 else 0
-                batch_kd_loss = sum(kd_losses) / len(kd_losses) if len(kd_losses) > 0 else 0
+                batch_loss = sum(losses) / len(losses)
+                batch_contrastive_loss = sum(contrastive_losses) / len(contrastive_losses)
+                batch_kd_loss = sum(kd_losses) / len(kd_losses)
+                batch_kd_rkd_loss = sum(kd_rkd_losses) / len(kd_rkd_losses)
+                batch_ot_loss = sum(ot_losses) / len(ot_losses)
+                batch_kd_dtw_loss = sum(kd_dtw_losses) / len(kd_dtw_losses)
                 epoch_loss += sum(losses)
                 epoch_contrastive_loss += sum(contrastive_losses)
                 epoch_kd_loss += sum(kd_losses)
                 progress_bar.set_postfix({
-                    "loss": f"{batch_loss:.4f}",
-                    "contrastive_loss": f"{batch_contrastive_loss:.4f}",
-                    "kd_loss": f"{batch_kd_loss:.4f}",
+                    'loss': f"{batch_loss:.4f}",
+                    'kd_loss': f"{batch_kd_loss:.4f}",
+                    'contrastive_loss': f"{batch_contrastive_loss:.4f}",
+                    'kd_rkd_loss': f"{batch_kd_rkd_loss:.4f}",
+                    'ot_loss': f"{batch_ot_loss:.4f}",
+                    'kd_dtw_loss': f"{batch_kd_dtw_loss:.4f}",
                     "lr": f"{current_lr:.6f}" if current_lr is not None else "N/A",
                 })
                 progress_bar.update(1)
@@ -280,19 +290,22 @@ def finetune(
                         "train/loss": batch_loss,
                         "train/contrastive_loss": batch_contrastive_loss,
                         "train/kd_loss": batch_kd_loss,
-                        "train/lr": lr_scheduler.get_last_lr()[0],
+                        "train/kd_rkd_loss": batch_kd_rkd_loss,
+                        "train/ot_loss": batch_ot_loss,
+                        "train/kd_dtw_loss": batch_kd_dtw_loss,
+                        "train/lr": current_lr,
                         "train/epoch": epoch + 1,
                         "train/global_step": step,
                     })
                     
                     logging_output['micro_step_time'] = []
                     logging_output['step_time'] = []
-                losses, contrastive_losses, kd_losses = [], [], []
+                
                 epoch_step += 1
 
             
         # End of epoch
-        if getattr(model_engine, "global_rank", 0) == 0:
+        if dist.get_rank() == 0:
             avg_epoch_loss = epoch_loss / max(1, epoch_step)
             avg_contrastive_loss = epoch_contrastive_loss / max(1, epoch_step)
             avg_kd_loss = epoch_kd_loss / max(1, epoch_step)
@@ -313,81 +326,62 @@ def finetune(
             if training_args.save_strategy == "epoch":
                 ckpt_dir = os.path.join(training_args.output_dir, f"checkpoint-epoch{epoch + 1}")
                 os.makedirs(ckpt_dir, exist_ok=True)
-                unwarpped_student = getattr(getattr(model_engine, "module", model_engine), "student", None)
-                
-                if unwarpped_student is None:
-                    raise ValueError("Cannot find the student model in the model engine.")
-                else: 
-                    if hasattr(unwarpped_student, 'peft_config'):
-                        try: 
-                            unwarpped_student.peft_config.save_pretrained(ckpt_dir)
-                            print_rank("Saved LoRA adapter model.")
-                        except Exception as e: 
-                            print_rank(f"Warning: cannot save peft_config: {e}")
-                        try: 
-                            unwarpped_student.encoder.save_pretrained(ckpt_dir)
-                        except Exception as e:
-                            print_rank(f"Warning: cannot save encoder: {e}")
-                        print_rank("Saved LoRA adapter model.")
-                    else:
-                        try:
-                            unwarpped_student.encoder.save_pretrained(ckpt_dir)
-                            print_rank("Saved full student model")
-                        except Exception as e:
-                            print_rank(f"Warning: cannot save encoder: {e}")
-                        print_rank("Saved full student model.")
+                with GatheredParameters(model_engine.module.student.parameters(), modifier_rank=0):
+                    model_engine.module.student.encoder.save_pretrained(ckpt_dir)
                     
-                    print_rank(f"Checkpoint saved at {ckpt_dir}")
-                
-                student_config = AutoConfig.from_pretrained(model_args.model_name) if model_args.model_name else None
-                tokenizer = AutoTokenizer.from_pretrained(model_args.model_name) if model_args.model_name else None
-                processor = AutoProcessor.from_pretrained(model_args.model_name) if model_args.model_name else None
-                student_config.save_pretrained(ckpt_dir)
-                tokenizer.save_pretrained(ckpt_dir)
-                processor.save_pretrained(ckpt_dir)
+                try:
+                    student_config = AutoConfig.from_pretrained(model_args.model_name) if model_args.model_name else None
+                    tokenizer = AutoTokenizer.from_pretrained(model_args.model_name) if model_args.model_name else None
+                    if student_config is not None:
+                        student_config.save_pretrained(ckpt_dir)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(ckpt_dir)
+                except Exception as e:
+                    print_rank(f"Warning saving tokenizer/config: {e}")
+                try: 
+                    processor = AutoProcessor.from_pretrained(model_args.model_name) if model_args.model_name else None
+                    if processor is not None:
+                        processor.save_pretrained(ckpt_dir)
+                except Exception as e:
+                    print_rank(f"Warning saving processor: {e}")
+            dist.barrier()
 
         print_rank(f"Epoch {epoch + 1} finished.")
     total_time = time.time() - start_time
     print_rank(f"Training completed in {total_time/3600:.2f} hours")
     
     # Save final model
-    if getattr(model_engine, "global_rank", 0) == 0 and training_args.save_strategy == "epoch":
+    if dist.get_rank() == 0 and training_args.save_strategy == "epoch":
         final_ckpt_dir = os.path.join(training_args.output_dir, f"checkpoint-final")
         os.makedirs(final_ckpt_dir, exist_ok=True)
-
-        unwarpped_student = getattr(getattr(model_engine, "module", model_engine), "student", None)
-        if unwarpped_student is not None:
-            try:
-                unwarpped_student.encoder.save_pretrained(final_ckpt_dir)
-            except Exception as e:
-                print_rank(f"Warning saving final encoder: {e}")
-
-            if hasattr(unwarpped_student, 'peft_config'):
-                try:
-                    unwarpped_student.peft_config.save_pretrained(final_ckpt_dir)
-                    print_rank("Saved LoRA adapter model.")
-                except Exception as e:
-                    print_rank(f"Warning saving final peft_config: {e}")
-            else:
-                print_rank("Saved full student model.")
-        else:
-            print_rank("Warning: cannot find student model to save in final checkpoint.")
+        with GatheredParameters(model_engine.module.student.parameters(), modifier_rank=0):
+            model_engine.module.student.encoder.save_pretrained(final_ckpt_dir)
 
         print_rank(f"Final model saved at {final_ckpt_dir}")
         
         if model_args.model_name:
-            student_config = AutoConfig.from_pretrained(model_args.model_name)
-            tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
-            processor = AutoProcessor.from_pretrained(model_args.model_name)
-            student_config.save_pretrained(final_ckpt_dir)
-            tokenizer.save_pretrained(final_ckpt_dir)
-            processor.save_pretrained(final_ckpt_dir)
-
+            try:
+                student_config = AutoConfig.from_pretrained(model_args.model_name)
+                tokenizer = AutoTokenizer.from_pretrained(model_args.model_name)
+                if student_config is not None:
+                    student_config.save_pretrained(final_ckpt_dir)
+                if tokenizer is not None:
+                    tokenizer.save_pretrained(final_ckpt_dir)
+            except Exception as e:
+                print_rank(f"Warning saving final tokenizer/config: {e}")
+            try: 
+                processor = AutoProcessor.from_pretrained(model_args.model_name)
+                if processor is not None:
+                    processor.save_pretrained(final_ckpt_dir)
+            except Exception as e:
+                print_rank(f"Warning saving final processor: {e}")
         if "wandb" in training_args.report_to:
             try:
                 wandb.finish()
             except Exception as e:
                 print_rank(f"Warning: cannot finalize wandb run: {e}")
+        
+        dist.barrier()
 
     return logging_output
 
@@ -404,9 +398,12 @@ def main():
     data_args: DataArguments
     training_args: TrainingArguments
     
+    torch.backends.cudnn.enabled = False
+    device =  torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
+    
     train_dataset = prepare_dataset(data_args, model_args)
     print_rank(f"Number of training samples: {len(train_dataset)}")
-    distiller = Distiller(model_args, training_args, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    distiller = Distiller(model_args, training_args)
     print(f"Number of parameters in student model: {sum(p.numel() for p in distiller.student.parameters())}")
     print(f"Number of parameters in teacher model: {sum(p.numel() for p in distiller.teacher.parameters())}")
     print(f"Number of trainable parameters in student model: {sum(p.numel() for p in distiller.student.parameters() if p.requires_grad)}")
@@ -418,7 +415,17 @@ def main():
         data_args=data_args,
         training_args=training_args,
     )
-    optimizer = get_optimizer(distiller, training_args)
+    optimizer = get_optimizer(distiller.student, training_args)
+    # optimizer = AdamW(
+    #     distiller.student.parameters(),
+    #     lr=training_args.learning_rate,
+    #     weight_decay=training_args.weight_decay,
+    #     betas=(0.9, 0.999),
+    #     eps=1e-8,
+    # )
+    if model_args.projector_config_path is not None:
+        optimizer = distiller.add_optimizer_param_group(optimizer)
+    
     print_rank(f"Number of optimizer parameters: {sum(p.numel() for group in optimizer.param_groups for p in group['params'])}")
     world_size = dist.get_world_size() if dist.is_initialized() else 1
     print("World size: ", world_size)
@@ -462,6 +469,7 @@ def main():
         lr_scheduler=lr_scheduler,
         collator=collator,
         criterion=criterion,
+        device=device,
     )
     
     print_rank("Training completed successfully!")

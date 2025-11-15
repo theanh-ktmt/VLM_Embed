@@ -204,6 +204,10 @@ def main():
             subset,
             split=data_args.dataset_split,
         )
+        if (subset =="WebQA" or subset=="EDIS") and "qry_text" in eval_data.column_names and model_args.model_backbone=="llava_qwen2":
+            eval_data = eval_data.map(
+                lambda x: {"qry_text": x["qry_text"].replace("<|image_1|>", "").strip()}
+            )
 
         # for ColPali, pad only once for candidates
         if model_args.model_backbone == COLPALI:

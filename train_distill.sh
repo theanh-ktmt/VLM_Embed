@@ -17,19 +17,21 @@ deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
     --teacher_model_name "raghavlite/B3_Qwen2_2B" \
     --lora True \
     --teacher_lora True \
-    --lora_r 32 \
+    --lora_r 64 \
+    --lora_target_modules "qkv_proj,o_proj,gate_up_proj,down_proj,k_proj,q_proj,out_proj,v_proj" \
     --teacher_lora_r 8 \
     --teacher_pooling "eos" \
     --teacher_backbone "qwen2_vl" \
     --model_backbone "llava_qwen2" \
     --pooling "eos" \
     --dataset_name "TIGER-Lab/MMEB-train" \
-    --subset_name "HatefulMemes" "ImageNet_1K" \
+    --subset_name "CIRR" "VOC2007" "MSCOCO" "OK-VQA" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
-    --output_dir "training/no_deepspeed_propose_kd_weight_1" \
+    --output_dir "training/deepspeed_propose_kd_weight_1" \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
+    --deepspeed_config $DS_CONFIG \
     --learning_rate 1e-5 \
     --num_train_epochs 1 \
     --bf16 \
@@ -42,9 +44,8 @@ deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
     --teacher_normalize True \
     --lr_scheduler_type "cosine" \
     --warmup_ratio 0.03 \
-    --report_to "wandb" \
     --kd_weight 0.3 \
     --kd_loss_type "proposal_dtw" \
     --image_resolution "low" \
     --projector_config_path "/workspace/ComfyUI/models/gligen/VLM_Embed/config/projector_config.json" \
-    --projector_lr 5e-5 \
+    --projector_lr 5e-5

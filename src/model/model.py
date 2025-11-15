@@ -293,6 +293,26 @@ class MMEBModel(nn.Module):
                 inference_mode=False
             )
             lora_model = get_peft_model(base_model, lora_config)
+            
+            if model_backbone in [LLAVA_QWEN2]:
+                print_master("Enabling training for mm_projector")
+                if hasattr(lora_model, 'base_model') and hasattr(lora_model.base_model, "model") and hasattr(lora_model.base_model.model, "model"):
+                    actual_model = lora_model.base_model.model.model
+                elif hasattr(lora_model, 'model') and hasattr(lora_model.model, 'model'):
+                    actual_model = lora_model.model.model
+                elif hasattr(lora_model, 'model'):
+                    actual_model = lora_model.model
+                else:
+                    actual_model = lora_model
+                
+                if hasattr(actual_model, 'mm_projector'):
+                    for param in actual_model.mm_projector.parameters():
+                        param.requires_grad = True
+                    print_master("Enabled training for mm_projector")
+                if hasattr(actual_model, 'vision_tower'):
+                    for param in actual_model.vision_tower.parameters():
+                        param.requires_grad = False
+                    print_master("Frozen vision_encoder parameters")
             model = cls(
                 encoder=lora_model,
                 pooling=model_args.pooling,
@@ -370,6 +390,15 @@ class MMEBModel(nn.Module):
         elif model_args.model_backbone == COLPALI:
             base_model = ColPali.from_pretrained(model_args.model_name)
             setattr(base_model, 'config', config)
+        elif model_backbone in [LLAVA_QWEN2]:
+            config._attn_implementation = "eager"
+            base_model = LlavaQwen2ForCausalLM.from_pretrained(
+                model_args.model_name,
+                low_cpu_mem_usage=True,
+                torch_dtype=torch.bfloat16,
+                config=config,
+                **kwargs
+            )
         else:
             # Loading external base model from HF
             config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)

@@ -262,6 +262,10 @@ class EvalDataset(Dataset):
             subset,
             split=self.data_args.dataset_split,
         )
+        if (subset =="WebQA" or subset=="EDIS") and "qry_text" in self.eval_data.column_names and model_args.model_backbone=="llava_qwen2":
+            self.eval_data = self.eval_data.map(
+                lambda x: {"qry_text": x["qry_text"].replace("<|image_1|>", "").strip()}
+            )
         self.paired_data = self.get_paired_data(text_field, img_path_field)
         # self.paired_dataset = datasets.Dataset.from_dict({
         #     "text": [pair["text"] for pair in self.paired_data],
