@@ -7,7 +7,7 @@ NUM_GPUS=1
 TRAIN_SCRIPT="train_distillation.py"
 
 # Đường dẫn tới file config DeepSpeed bạn vừa tạo
-DS_CONFIG="config/ds_config_test.json"
+DS_CONFIG="config/ds_config_stage2.json"
 
 # =========================================================================
 # Cách 1: Dùng launcher của DeepSpeed (Khuyên dùng)
@@ -25,17 +25,18 @@ deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
     --model_backbone "llava_qwen2" \
     --pooling "eos" \
     --dataset_name "TIGER-Lab/MMEB-train" \
-    --subset_name "VOC2007" "OK-VQA"\
+    --subset_name "ImageNet_1K" "N24News" "HatefulMemes" "VOC2007" "SUN397" "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W" "VisDial" "CIRR" "VisualNews_t2i" "VisualNews_i2t" "MSCOCO_i2t" "MSCOCO_t2i" "NIGHTS" "WebQA" "MSCOCO" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
+    --percent_data 0.6 \
     --output_dir "training/deepspeed_projector_test" \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 2 \
     --deepspeed_config $DS_CONFIG \
     --learning_rate 5e-5 \
-    --num_train_epochs 1 \
+    --num_train_epochs 2 \
     --bf16 \
-    --save_total_limit 2 \
+    --save_total_limit 5 \
     --logging_steps 1 \
     --save_strategy "epoch" \
     --seed 42 \

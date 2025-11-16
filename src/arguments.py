@@ -74,6 +74,7 @@ class DataArguments:
     eval_image_dir: str = field(default=None, metadata={"help": "Eval Image directory path"})
     pos_only: bool = field(default=False, metadata={"help": "Only use positives"})
     # new args distillation
+    percent_data: float = field(default=1.0, metadata={"help": "percentage of data used for distillation training"})
     
 
 
