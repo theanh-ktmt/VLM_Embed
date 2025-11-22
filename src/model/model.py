@@ -272,16 +272,48 @@ class MMEBModel(nn.Module):
 
 
         if model_args.init_lora_model:
+            print_master(f"Loading LoRA initialization from {model_args.model_name}")
             model_name_or_path = model_args.checkpoint_path if model_args.checkpoint_path else model_args.model_name
             print_master(f'Loading LoRA from {model_name_or_path}')
             lora_config = LoraConfig.from_pretrained(model_name_or_path)
-            lora_model = PeftModel.from_pretrained(base_model, model_name_or_path, config=lora_config, is_trainable=False)
-            lora_model.load_adapter(model_name_or_path, lora_model.active_adapter, is_trainable=False)
-            lora_model = lora_model.merge_and_unload()
-            base_model = lora_model.to(dtype=torch.bfloat16)
+            lora_model = PeftModel.from_pretrained(base_model, model_name_or_path, config=lora_config, is_trainable=True)
+            # lora_model.load_adapter(model_name_or_path, lora_model.active_adapter, is_trainable=False)
+            # lora_model = lora_model.merge_and_unload()
+            if model_backbone in[LLAVA_QWEN2]:
+                print_master("Enabling training for mm_projector")
+                modules_to_save = list(set(
+                    (lora_config.modules_to_save or []) + ["mm_projector"]
+                ))
+                lora_model.peft_config[lora_model.active_adapter].modules_to_save = modules_to_save
+                lora_model.peft_config[lora_model.active_adapter].inference_mode = False
+                lora_model = get_peft_model(lora_model, lora_model.peft_config[lora_model.active_adapter])
+                if hasattr(lora_model, 'base_model') and hasattr(lora_model.base_model, "model") and hasattr(lora_model.base_model.model, "model"):
+                    actual_model = lora_model.base_model.model.model
+                elif hasattr(lora_model, 'model') and hasattr(lora_model.model, 'model'):
+                    actual_model = lora_model.model.model
+                elif hasattr(lora_model, 'model'):
+                    actual_model = lora_model.model
+                else:
+                    actual_model = lora_model
+                
+                if hasattr(actual_model, 'mm_projector'):
+                    for param in actual_model.mm_projector.parameters():
+                        param.requires_grad = True
+                    print_master(f"Enabled training for mm_projector - trainable params: {sum(p.numel() for p in actual_model.mm_projector.parameters() if p.requires_grad)}")
+                if hasattr(actual_model, 'vision_tower'):
+                    for param in actual_model.vision_tower.parameters():
+                        param.requires_grad = False
+                    print_master("Frozen vision_encoder parameters")
+            
+            model = cls(
+                encoder=lora_model,
+                pooling=model_args.pooling,
+                normalize=model_args.normalize,
+                temperature=model_args.temperature
+            )
 
 
-        if model_args.lora:
+        elif model_args.lora:
             print_master(f'Loading lora adapter from {base_model}')
             if model_backbone in [LLAVA_QWEN2]:
                 modules_to_save = ["mm_projector"]

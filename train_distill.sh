@@ -13,7 +13,7 @@ DS_CONFIG="config/ds_config_stage2.json"
 # Cách 1: Dùng launcher của DeepSpeed (Khuyên dùng)
 # =========================================================================
 deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
-    --model_name "apple/FastVLM-0.5B" \
+    --model_name apple/FastVLM-0.5B \
     --teacher_model_name "raghavlite/B3_Qwen2_2B" \
     --lora True \
     --teacher_lora True \
@@ -25,15 +25,15 @@ deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
     --model_backbone "llava_qwen2" \
     --pooling "eos" \
     --dataset_name "TIGER-Lab/MMEB-train" \
-    --subset_name "ImageNet_1K" "N24News" "HatefulMemes" "VOC2007" "SUN397" "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W" "VisDial" "CIRR" "VisualNews_t2i" "VisualNews_i2t" "MSCOCO_i2t" "MSCOCO_t2i" "NIGHTS" "WebQA" "MSCOCO" \
+    --subset_name "VOC2007" "ImageNet_1K" "N24News" "SUN397" "HatefulMemes" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
-    --percent_data 0.6 \
-    --output_dir "training/deepspeed_projector_test" \
+    --percent_data 0.5 \
+    --output_dir "training/deepspeed_projector_cls" \
     --per_device_train_batch_size 16 \
-    --gradient_accumulation_steps 2 \
+    --gradient_accumulation_steps 1 \
     --deepspeed_config $DS_CONFIG \
-    --learning_rate 5e-5 \
+    --learning_rate 1e-4 \
     --num_train_epochs 2 \
     --bf16 \
     --save_total_limit 5 \

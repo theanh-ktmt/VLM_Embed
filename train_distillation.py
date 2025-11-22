@@ -27,16 +27,33 @@ from transformers.integrations import HfDeepSpeedConfig
 from deepspeed.runtime.zero import GatheredParameters
 # Todo
 def get_optimizer_params(model, training_args):
-    param_optimizer = list(model.named_parameters())
+    # Unwrap DDP
+    original_model = model
+    while isinstance(model, DDP):
+        model = model.module
+    
+    # Lấy encoder (lora_model)
+    if hasattr(model, 'encoder'):
+        target_model = model.encoder
+    else:
+        target_model = model
+    
+    # Collect ALL trainable parameters (không dùng named_parameters)
+    trainable_params = []
+    for name, param in target_model.named_parameters():
+        if param.requires_grad:
+            trainable_params.append(param)
+            print_master(f"Added to optimizer: {name} ({param.numel()} params)")
+    
+    print_master(f"Total trainable params: {sum(p.numel() for p in trainable_params)}")
+    
     optimizer_grouped_parameters = [
-        {'params': [p for n, p in param_optimizer if p.requires_grad]},
+        {'params': trainable_params},
     ]
 
     return optimizer_grouped_parameters
 
 def get_optimizer(model, training_args):
-    while isinstance(model, DDP):
-        model = model.module
     optimizer_grouped_parameters = get_optimizer_params(model, training_args)
     optimizer = AdamW(
         optimizer_grouped_parameters, 
@@ -171,18 +188,18 @@ def finetune(
     print_rank(f"model device: {next(model_engine.parameters()).device}")
     model_engine.train()
 
-    # if "wandb" in training_args.report_to and dist.get_rank() == 0:
-    #     print("Initialized wandb")
-    #     wandb.init(
-    #         project="vlm_distillation_projector", 
-    #         name=model_args.model_backbone if model_args.model_backbone else "distillation_experiment", 
-    #         config={
-    #             "learning_rate": training_args.learning_rate,
-    #             "batch_size": training_args.per_device_train_batch_size,
-    #             "epochs": training_args.num_train_epochs,
-    #             "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
-    #         }
-    #     )
+    if "wandb" in training_args.report_to and dist.get_rank() == 0:
+        print("Initialized wandb")
+        wandb.init(
+            project="vlm_distillation_projector", 
+            name=model_args.model_backbone if model_args.model_backbone else "distillation_experiment", 
+            config={
+                "learning_rate": training_args.learning_rate,
+                "batch_size": training_args.per_device_train_batch_size,
+                "epochs": training_args.num_train_epochs,
+                "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+            }
+        )
     
     step = 0
     logging_output = {
@@ -285,18 +302,18 @@ def finetune(
                 })
                 progress_bar.update(1)
                 
-                # if "wandb" in training_args.report_to:
-                #     wandb.log({
-                #         "train/loss": batch_loss,
-                #         "train/contrastive_loss": batch_contrastive_loss,
-                #         "train/kd_loss": batch_kd_loss,
-                #         "train/kd_rkd_loss": batch_kd_rkd_loss,
-                #         "train/ot_loss": batch_ot_loss,
-                #         "train/kd_dtw_loss": batch_kd_dtw_loss,
-                #         "train/lr": current_lr,
-                #         "train/epoch": epoch + 1,
-                #         "train/global_step": step,
-                #     })
+                if "wandb" in training_args.report_to:
+                    wandb.log({
+                        "train/loss": batch_loss,
+                        "train/contrastive_loss": batch_contrastive_loss,
+                        "train/kd_loss": batch_kd_loss,
+                        "train/kd_rkd_loss": batch_kd_rkd_loss,
+                        "train/ot_loss": batch_ot_loss,
+                        "train/kd_dtw_loss": batch_kd_dtw_loss,
+                        "train/lr": current_lr,
+                        "train/epoch": epoch + 1,
+                        "train/global_step": step,
+                    })
                     
                 #     logging_output['micro_step_time'] = []
                 #     logging_output['step_time'] = []
@@ -315,13 +332,13 @@ def finetune(
                 f"Avg Contrastive Loss: {avg_contrastive_loss:.4f} | Avg KD Loss: {avg_kd_loss:.4f} | "
             )
             
-            # if "wandb" in training_args.report_to:
-            #     wandb.log({
-            #         "epoch/avg_loss": avg_epoch_loss,
-            #         "epoch/avg_contrastive_loss": avg_contrastive_loss,
-            #         "epoch/avg_kd_loss": avg_kd_loss,
-            #         "epoch/epoch": epoch + 1,
-            #     })
+            if "wandb" in training_args.report_to:
+                wandb.log({
+                    "epoch/avg_loss": avg_epoch_loss,
+                    "epoch/avg_contrastive_loss": avg_contrastive_loss,
+                    "epoch/avg_kd_loss": avg_kd_loss,
+                    "epoch/epoch": epoch + 1,
+                })
             # Save checkpoint
             if training_args.save_strategy == "epoch":
                 ckpt_dir = os.path.join(training_args.output_dir, f"checkpoint-epoch{epoch + 1}")
@@ -375,11 +392,11 @@ def finetune(
                     processor.save_pretrained(final_ckpt_dir)
             except Exception as e:
                 print_rank(f"Warning saving final processor: {e}")
-        # if "wandb" in training_args.report_to:
-        #     try:
-        #         wandb.finish()
-        #     except Exception as e:
-        #         print_rank(f"Warning: cannot finalize wandb run: {e}")
+        if "wandb" in training_args.report_to:
+            try:
+                wandb.finish()
+            except Exception as e:
+                print_rank(f"Warning: cannot finalize wandb run: {e}")
         
         dist.barrier()
 
