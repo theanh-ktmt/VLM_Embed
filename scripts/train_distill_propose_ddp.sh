@@ -25,7 +25,7 @@ torchrun --standalone \
     --subset_name "MSCOCO" "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W" "VisDial" "CIRR" "VisualNews_i2t" "VisualNews_t2i" "MSCOCO_i2t" "MSCOCO_t2i" "NIGHTS" "WebQA" "VOC2007" "ImageNet_1K" "N24News" "SUN397" "HatefulMemes" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
-    --output_dir "training/propose_cls" \
+    --output_dir "training/propose_all" \
     --percent_data 1.0 \
     --per_device_train_batch_size 10 \
     --gradient_accumulation_steps 1 \
@@ -35,11 +35,11 @@ torchrun --standalone \
     --save_total_limit 5 \
     --logging_steps 1 \
     --save_strategy "epoch" \
+    --seed 42 \
     --weight_decay 0.01 \
     --normalize True \
     --teacher_normalize True \
     --lr_scheduler_type "cosine" \
-    --report_to "wandb" \
     --warmup_ratio 0.03 \
     --kd_weight 0.3 \
     --kd_loss_type "proposal_dtw" \
