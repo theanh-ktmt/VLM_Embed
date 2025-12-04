@@ -156,6 +156,7 @@ class Trainer:
                     'kd_rkd_loss': f"{batch_kd_rkd_loss:.4f}",
                     'ot_loss': f"{batch_ot_loss:.4f}",
                     'kd_dtw_loss': f"{batch_kd_dtw_loss:.4f}",
+                    'lr': f"{self.lr_scheduler.get_last_lr()[0]:.6f}",
                 })
                 progress_bar.update(1)
                 
@@ -167,10 +168,12 @@ class Trainer:
             self.run_epoch(epoch)
             if is_main_process() and self.training_args.save_strategy == "epoch":
                 ckpt_dir = os.path.join(self.training_args.output_dir, f"checkpoint-epoch-{epoch}")
+                projector_dir = os.path.join(ckpt_dir, "mm_projector.pth")
                 os.makedirs(ckpt_dir, exist_ok=True)
                 
                 student = self.distiller.module.student
                 student.encoder.save_pretrained(ckpt_dir)
+                torch.save(student.encoder.model.model.mm_projector.state_dict(), projector_dir)
                 student_config = AutoConfig.from_pretrained(self.model_args.model_name) if self.model_args.model_name else None
                 tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_name) if self.model_args.model_name else None
                 if student_config:
@@ -187,9 +190,11 @@ class Trainer:
 
         if is_main_process():
             final_ckpt_dir = os.path.join(self.training_args.output_dir, f"checkpoint-final")
+            projector_dir =  os.path.join(final_ckpt_dir, "mm_projector.pth")
             os.makedirs(final_ckpt_dir, exist_ok=True)
             student = self.distiller.module.student
             student.encoder.save_pretrained(final_ckpt_dir)
+            torch.save(student.encoder.model.model.mm_projector.state_dict(), projector_dir)
             student_config = AutoConfig.from_pretrained(self.model_args.model_name) if self.model_args.model_name else None
             tokenizer = AutoTokenizer.from_pretrained(self.model_args.model_name) if self.model_args.model_name else None
             if student_config:
@@ -241,6 +246,15 @@ def main():
         drop_last=True,
         pin_memory=False,
     )
+    num_trainable_vision = 0
+    for n, p in distiller.student.named_parameters():
+        if "mm_projector" in n:
+            p.requires_grad = True
+        if p.requires_grad:
+            p.data = p.data.to(torch.bfloat16)
+            num_trainable_vision += p.numel()
+    print_rank(f"Number of trainable vision parameters: {num_trainable_vision}")
+    
     optimizer = AdamW(
         distiller.student.parameters(),
         lr=training_args.learning_rate,
@@ -252,7 +266,9 @@ def main():
     total_steps = (len(train_dataloader.dataset) // (training_args.per_device_train_batch_size * dist.get_world_size()) // training_args.gradient_accumulation_steps) * training_args.num_train_epochs
     if model_args.projector_config_path is not None:
         optimizer = distiller.add_optimizer_param_group(optimizer)
-        
+
+    print("Number of trainable parameters:", sum(p.numel() for p in optimizer.param_groups[0]['params'] if p.requires_grad))
+
     if training_args.lr_scheduler_type == "linear":
         from transformers import get_linear_schedule_with_warmup
         lr_scheduler = get_linear_schedule_with_warmup(

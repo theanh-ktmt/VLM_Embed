@@ -1,24 +1,21 @@
 #!/bin/bash
 
-# Số lượng GPU bạn muốn sử dụng
-NUM_GPUS=1
+# Số lượng GPU trên mỗi node (máy)
+NUM_GPUS_PER_NODE=1
 
 # Đường dẫn tới file script training của bạn
-TRAIN_SCRIPT="train_distillation.py"
-
-# Đường dẫn tới file config DeepSpeed bạn vừa tạo
-DS_CONFIG="config/ds_config_stage2.json"
+TRAIN_SCRIPT="train_distill_ddp.py"
 
 # =========================================================================
-# Cách 1: Dùng launcher của DeepSpeed (Khuyên dùng)
+# Dùng torchrun để khởi chạy
 # =========================================================================
-deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
+torchrun --standalone \
+    --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --model_name apple/FastVLM-0.5B \
     --teacher_model_name "raghavlite/B3_Qwen2_2B" \
     --lora True \
     --teacher_lora True \
     --lora_r 64 \
-    --lora_target_modules "qkv_proj,o_proj,gate_up_proj,down_proj,k_proj,q_proj,out_proj,v_proj" \
     --teacher_lora_r 8 \
     --teacher_pooling "eos" \
     --teacher_backbone "qwen2_vl" \
@@ -28,11 +25,10 @@ deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
     --subset_name "OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
-    --percent_data 0.8 \
-    --output_dir "training/deepspeed_projector_vqa" \
-    --per_device_train_batch_size 16 \
+    --percent_data 1.0 \
+    --output_dir "training/meta_propose_vqa" \
+    --per_device_train_batch_size 10 \
     --gradient_accumulation_steps 1 \
-    --deepspeed_config $DS_CONFIG \
     --learning_rate 1e-4 \
     --num_train_epochs 2 \
     --bf16 \
@@ -47,6 +43,6 @@ deepspeed --num_gpus=$NUM_GPUS $TRAIN_SCRIPT \
     --warmup_ratio 0.03 \
     --kd_weight 0.3 \
     --kd_loss_type "proposal_dtw" \
-    --image_resolution "low" \
+    --image_resolution "mid" \
     --projector_config_path "./config/projector_config.json" \
     --projector_lr 5e-5

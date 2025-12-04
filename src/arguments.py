@@ -43,6 +43,7 @@ class ModelArguments:
     projector_lr: float = field(default=1e-4, metadata={"help": "projector learning rate"})
     student_hidden_dim: int = field(default=896, metadata={"help": "student hidden dim"})
     teacher_hidden_dim: int = field(default=1536, metadata={"help": "teacher hidden dim"})
+    load_pretrained_lora: bool = field(default=False, metadata={"help": "load pretrained lora model for student"})
     #! new args 2
 
 @dataclass

@@ -169,8 +169,9 @@ def main():
             with torch.no_grad():
                 for batch in tqdm(eval_tgt_loader, desc=f"Encode target - {subset}"):
                     batch = batch_to_device(batch, training_args.device)
+                    with torch.autocast(enabled=True, dtype=torch.bfloat16, device_type="cuda"):
                     # print(batch['pixel_values'].shape)
-                    output = model(tgt=batch)
+                        output = model(tgt=batch)
                     encoded_tensor.append(output["tgt_reps"].cpu().detach().float())
             encoded_tensor = np.concatenate(encoded_tensor)
             with open(encode_tgt_path, 'wb') as f:

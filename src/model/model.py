@@ -4,12 +4,13 @@ import torch.distributed as dist
 from torch import nn, Tensor
 from transformers import PreTrainedModel, AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from peft import LoraConfig, get_peft_model, PeftModel
+import os
 from src.arguments import ModelArguments, TrainingArguments
 from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, \
     backbone2model, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, LLAVA_ONEVISION, LLAVA_QWEN2
 
 from src.arguments import ModelArguments
-from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, INTERNVIDEO2, \
+from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, \
     QWEN2_VL_TOKENSELECTION, backbone2model, GME, VLM_IMAGE_TOKENS, LamRA, COLPALI, INTERN_VL3, LLAVA_ONEVISION
 from src.model.vlm_backbone.colpali import ColPali
 from src.model.vlm_backbone.gme.gme_inference import GmeQwen2VL
@@ -45,6 +46,7 @@ class MMEBModel(nn.Module):
             self.world_size = dist.get_world_size()
 
     def encode_input(self, input):
+        INTERNVIDEO2 = "internvideo2"
         if getattr(self, "model_backbone", None) == INTERNVIDEO2:
             if "input_ids" in input.keys():
                 # text side
@@ -102,6 +104,14 @@ class MMEBModel(nn.Module):
             hidden_states = hidden_states.hidden_states[-1]
             pooled_output = self._pooling(hidden_states, input['attention_mask'])
             return pooled_output
+            """
+                - num_tokens = num_image_tokens - 1 + text_tokens
+                - hidden_states.hidden_states: (num_layers, batch, num_tokens, embed_dim)
+                    -> -1 because the first token is IMAGE_TOKEN_INDEX
+                - pooled_output: (batch, embed_dim), 
+                - image_features: (batch, num_image_tokens, embed_dim), 
+                - attention_matrix: list of (batch, num_heads, num_tokens, num_tokens)
+            """
         elif getattr(self, "model_backbone", None) in [LLAVA_NEXT, LLAVA_ONEVISION]:
             print("Encoding input for LLAVA model backbone")
             if hasattr(input, 'pixel_values'):
@@ -119,7 +129,7 @@ class MMEBModel(nn.Module):
             pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
             print("len image features:", None if image_features is None else image_features.shape)
             return pooled_output, image_features, attention_matrix, output_hidden_states
-        elif getattr(self, "model_backbone", None) == LLAVA_QWEN2:
+        elif getattr(self, "model_backbone", None) in [LLAVA_QWEN2, QWEN2_VL]:
             # print("Encoding input for FastVLM model backbone")
             hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
             if hasattr(hidden_states, 'batch_image_embeds'):
@@ -130,6 +140,7 @@ class MMEBModel(nn.Module):
             last_hidden_state = hidden_states.hidden_states[-1]
             attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
             pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
+
             return pooled_output, image_features, attention_matrix, output_hidden_states
         else:
             # import ipdb; ipdb.set_trace()
@@ -142,8 +153,19 @@ class MMEBModel(nn.Module):
             last_hidden_state = hidden_states.hidden_states[-1]
             attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
             pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
-            return pooled_output, image_features, attention_matrix, output_hidden_states
 
+            all_layers_embeds = torch.stack([self._pooling(hidden_state, input['attention_mask']) 
+                                            for hidden_state in hidden_states.hidden_states]).permute(1, 0, 2)
+            
+            return pooled_output, image_features, attention_matrix, output_hidden_states
+        """
+            - num_tokens = num_image_tokens - 1 + text_tokens
+            - hidden_states.hidden_states: (num_layers, batch, num_tokens, embed_dim)
+                -> -1 because the first token is IMAGE_TOKEN_INDEX
+            - pooled_output: (batch, embed_dim), 
+            - image_features: (batch, num_image_tokens, embed_dim), 
+            - attention_matrix: list of (batch, num_heads, num_tokens, num_tokens)
+        """
     def _pooling(self, last_hidden_state, attention_mask):
         if self.pooling == 'last' or self.pooling == 'eos':
             left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
@@ -160,6 +182,7 @@ class MMEBModel(nn.Module):
                 # Get the vectors at the last 1 position of each attention mask
                 reps = last_hidden_state[
                     torch.arange(batch_size, device=last_hidden_state.device), eos_indices_positive]
+
         else:
             raise NotImplementedError
         if self.normalize:
@@ -168,12 +191,13 @@ class MMEBModel(nn.Module):
 
     @classmethod
     def build(cls, model_args: ModelArguments, **kwargs):
-        if model_args.init_lora_model:
-            peft_config = PeftConfig.from_pretrained(model_args.model_name)   
-            config = AutoConfig.from_pretrained(peft_config.base_model_name_or_path, trust_remote_code=True)
-        else:
-            config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)
-
+        INTERNVIDEO2 = "internvideo2"
+        # if model_args.lora:
+        #     peft_config = PeftConfig.from_pretrained(model_args.model_name)   
+        #     config = AutoConfig.from_pretrained(peft_config.base_model_name_or_path, trust_remote_code=True)
+        # else:
+        #     config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)
+        config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)
 
         model_backbone = get_backbone_name(hf_config=config)
         setattr(model_args, 'model_backbone', model_backbone)
@@ -260,7 +284,7 @@ class MMEBModel(nn.Module):
                 low_cpu_mem_usage=True,
                 torch_dtype=torch.bfloat16,
                 config=config,
-                **kwargs
+                # **kwargs
             )
         else:
             config.use_cache = False
@@ -271,40 +295,25 @@ class MMEBModel(nn.Module):
                 trust_remote_code=True)
 
 
-        if model_args.init_lora_model:
-            print_master(f"Loading LoRA initialization from {model_args.model_name}")
+        if model_args.load_pretrained_lora:
             model_name_or_path = model_args.checkpoint_path if model_args.checkpoint_path else model_args.model_name
-            print_master(f'Loading LoRA from {model_name_or_path}')
+            print_master(f'Loading Pre-trained LoRA model from {model_name_or_path}')
             lora_config = LoraConfig.from_pretrained(model_name_or_path)
-            lora_model = PeftModel.from_pretrained(base_model, model_name_or_path, config=lora_config, is_trainable=True)
-            # lora_model.load_adapter(model_name_or_path, lora_model.active_adapter, is_trainable=False)
-            # lora_model = lora_model.merge_and_unload()
-            if model_backbone in[LLAVA_QWEN2]:
-                print_master("Enabling training for mm_projector")
-                modules_to_save = list(set(
-                    (lora_config.modules_to_save or []) + ["mm_projector"]
-                ))
-                lora_model.peft_config[lora_model.active_adapter].modules_to_save = modules_to_save
-                lora_model.peft_config[lora_model.active_adapter].inference_mode = False
-                lora_model = get_peft_model(lora_model, lora_model.peft_config[lora_model.active_adapter])
-                if hasattr(lora_model, 'base_model') and hasattr(lora_model.base_model, "model") and hasattr(lora_model.base_model.model, "model"):
-                    actual_model = lora_model.base_model.model.model
-                elif hasattr(lora_model, 'model') and hasattr(lora_model.model, 'model'):
-                    actual_model = lora_model.model.model
-                elif hasattr(lora_model, 'model'):
-                    actual_model = lora_model.model
-                else:
-                    actual_model = lora_model
-                
-                if hasattr(actual_model, 'mm_projector'):
-                    for param in actual_model.mm_projector.parameters():
-                        param.requires_grad = True
-                    print_master(f"Enabled training for mm_projector - trainable params: {sum(p.numel() for p in actual_model.mm_projector.parameters() if p.requires_grad)}")
-                if hasattr(actual_model, 'vision_tower'):
-                    for param in actual_model.vision_tower.parameters():
-                        param.requires_grad = False
-                    print_master("Frozen vision_encoder parameters")
-            
+
+            lora_model = PeftModel.from_pretrained(base_model, 
+                                                   model_name_or_path, 
+                                                   config=lora_config,
+                                                   is_trainable=True)
+            # lora_model.config.modules_to_save = ['mm_projector']
+            # lora_model.peft_config['default'].modules_to_save = ['mm_projector']
+            projector_path = os.path.join(model_name_or_path, "mm_projector.pth")
+
+            if os.path.exists(projector_path):
+                lora_model.base_model.model.model.mm_projector.load_state_dict(
+                    torch.load(projector_path)
+                )
+                print("Successfully loading the projector's weight")
+
             model = cls(
                 encoder=lora_model,
                 pooling=model_args.pooling,
@@ -312,65 +321,35 @@ class MMEBModel(nn.Module):
                 temperature=model_args.temperature
             )
 
-
+            return model
         elif model_args.lora:
-            print_master(f'Loading lora adapter from {base_model}')
-            if model_backbone in [LLAVA_QWEN2]:
-                modules_to_save = ["mm_projector"]
-                lora_config = LoraConfig(
-                    r=model_args.lora_r,
-                    lora_alpha=model_args.lora_alpha,
-                    target_modules=model_args.lora_target_modules.split(','),
-                    lora_dropout=model_args.lora_dropout,
-                    init_lora_weights="gaussian",
-                    use_dora=True,
-                    inference_mode=False,
-                    modules_to_save=modules_to_save
-                )
-            else:
-                lora_config = LoraConfig(
-                    r=model_args.lora_r,
-                    lora_alpha=model_args.lora_alpha,
-                    target_modules=model_args.lora_target_modules.split(','),
-                    lora_dropout=model_args.lora_dropout,
-                    init_lora_weights="gaussian",
-                    use_dora=True,
-                    inference_mode=False,
-                )
+            print_master(f'Initializing LoRA adapter from {base_model}')
+            lora_config = LoraConfig(
+                r=model_args.lora_r,
+                lora_alpha=model_args.lora_alpha,
+                target_modules=model_args.lora_target_modules.split(','),
+                lora_dropout=model_args.lora_dropout,
+                init_lora_weights="gaussian",
+                use_dora=True,
+                inference_mode=False
+            )
             lora_model = get_peft_model(base_model, lora_config)
-            
-            if model_backbone in [LLAVA_QWEN2]:
-                print_master("Enabling training for mm_projector")
-                if hasattr(lora_model, 'base_model') and hasattr(lora_model.base_model, "model") and hasattr(lora_model.base_model.model, "model"):
-                    actual_model = lora_model.base_model.model.model
-                elif hasattr(lora_model, 'model') and hasattr(lora_model.model, 'model'):
-                    actual_model = lora_model.model.model
-                elif hasattr(lora_model, 'model'):
-                    actual_model = lora_model.model
-                else:
-                    actual_model = lora_model
-                
-                if hasattr(actual_model, 'mm_projector'):
-                    for param in actual_model.mm_projector.parameters():
-                        param.requires_grad = True
-                    print_master("Enabled training for mm_projector")
-                if hasattr(actual_model, 'vision_tower'):
-                    for param in actual_model.vision_tower.parameters():
-                        param.requires_grad = False
-                    print_master("Frozen vision_encoder parameters")
+
             model = cls(
                 encoder=lora_model,
                 pooling=model_args.pooling,
                 normalize=model_args.normalize,
                 temperature=model_args.temperature
             )
-        else:
-            model = cls(
-                encoder=base_model,
-                pooling=model_args.pooling,
-                normalize=model_args.normalize,
-                temperature=model_args.temperature
-            )
+
+            return model
+        
+        model = cls(
+            encoder=base_model,
+            pooling=model_args.pooling,
+            normalize=model_args.normalize,
+            temperature=model_args.temperature
+        )
         setattr(model, 'model_backbone', model_backbone)
         return model
 
@@ -378,6 +357,7 @@ class MMEBModel(nn.Module):
     @classmethod
     def load(cls, model_args: ModelArguments, is_trainable=True, **kwargs):
         # Loading the base model
+        INTERNVIDEO2 = "internvideo2"
         model_name_or_path = model_args.checkpoint_path if model_args.checkpoint_path else model_args.model_name
         config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
         model_backbone = get_backbone_name(hf_config=config)
@@ -435,15 +415,6 @@ class MMEBModel(nn.Module):
         elif model_args.model_backbone == COLPALI:
             base_model = ColPali.from_pretrained(model_args.model_name)
             setattr(base_model, 'config', config)
-        elif model_backbone in [LLAVA_QWEN2]:
-            config._attn_implementation = "eager"
-            base_model = LlavaQwen2ForCausalLM.from_pretrained(
-                model_args.model_name,
-                low_cpu_mem_usage=True,
-                torch_dtype=torch.bfloat16,
-                config=config,
-                **kwargs
-            )
         else:
             # Loading external base model from HF
             config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)
@@ -452,6 +423,7 @@ class MMEBModel(nn.Module):
                 model_name_or_path, **kwargs, config=config,
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True)
+            print(f"Loaded base model from HF: {model_name_or_path}")
 
         # Building the model on top of the base
         if model_args.lora:
@@ -459,19 +431,17 @@ class MMEBModel(nn.Module):
             lora_config = LoraConfig.from_pretrained(model_name_or_path)
             lora_model = PeftModel.from_pretrained(base_model, model_name_or_path, config=lora_config, is_trainable=is_trainable)
             lora_model.load_adapter(model_name_or_path, lora_model.active_adapter, is_trainable=is_trainable)
-            if not is_trainable:
-                lora_model = lora_model.merge_and_unload()
             
-            
-            #! Manual model merging. This should be commented always
-            # base_model=lora_model
-            # model_name_or_path = "./MMEB-trainedmodels/0420_InstuctionP_odibn_sdibn_20D_HNPS_Metis_bs1024.32bi_30.130_30P.10.5_70.170_vlm2vecqwen2b_2k_dy/"
-            # lora_config = LoraConfig.from_pretrained(model_name_or_path)
-            # lora_model = PeftModel.from_pretrained(base_model, model_name_or_path, config=lora_config, is_trainable=is_trainable)
-            # lora_model.load_adapter(model_name_or_path, lora_model.active_adapter, is_trainable=is_trainable)
+
+            projector_path = os.path.join(model_name_or_path, "mm_projector.pth")
+
+            if os.path.exists(projector_path):
+                lora_model.base_model.model.model.mm_projector.load_state_dict(
+                    torch.load(projector_path)
+                )
+                print("Successfully loading the projector's weight")
+                
             # lora_model = lora_model.merge_and_unload()
-            # lora_model._hf_peft_config_loaded = False
-            # lora_model.save_pretrained(model_name_or_path+"merged/")
 
             model = cls(
                 encoder=lora_model,
@@ -479,6 +449,7 @@ class MMEBModel(nn.Module):
                 normalize=model_args.normalize,
                 temperature=model_args.temperature
             )
+
         else:
             model = cls(
                 encoder=base_model,
@@ -495,8 +466,8 @@ class MMEBModel(nn.Module):
 
     def forward(self, qry: Dict[str, Tensor] = None, tgt: Dict[str, Tensor] = None, *args, **kwargs):
         # print(f"qry keys: {qry.keys() if qry else None}, tgt keys: {tgt.keys() if tgt else None}")
-        qry_reps, _, _, output_hidden_states = self.encode_input(qry) if qry else (None, None, None, None)  # (bsz_per_device, dim)
-        tgt_reps, _, _, output_hidden_states = self.encode_input(tgt) if tgt else (None, None, None, None) # (bsz_per_device, dim)
+        qry_reps = self.encode_input(qry)[0] if qry else None  # (bsz_per_device, dim)
+        tgt_reps = self.encode_input(tgt)[0] if tgt else None # (bsz_per_device, dim)
 
         if qry_reps is None or tgt_reps is None:
             return {"qry_reps": qry_reps, "tgt_reps": tgt_reps}

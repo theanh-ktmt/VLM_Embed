@@ -9,8 +9,9 @@ TRAIN_SCRIPT="train_distill_ddp.py"
 # =========================================================================
 # Dùng torchrun để khởi chạy
 # =========================================================================
-torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
-    --model_name "apple/FastVLM-0.5B" \
+torchrun --standalone \
+    --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
+    --model_name apple/FastVLM-0.5B \
     --teacher_model_name "raghavlite/B3_Qwen2_2B" \
     --lora True \
     --teacher_lora True \
@@ -21,12 +22,12 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --model_backbone "llava_qwen2" \
     --pooling "eos" \
     --dataset_name "TIGER-Lab/MMEB-train" \
-    --subset_name "ImageNet_1K" "N24News" "HatefulMemes" "VOC2007" "SUN397" \
+    --subset_name "MSCOCO" \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
-    --percent_data 1.0 \
-    --output_dir "training/propose_V" \
-    --per_device_train_batch_size 16 \
+    --percent_data 0.3 \
+    --output_dir "training/meta_propose_grounding" \
+    --per_device_train_batch_size 10 \
     --gradient_accumulation_steps 1 \
     --learning_rate 1e-4 \
     --num_train_epochs 2 \
@@ -42,6 +43,6 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --warmup_ratio 0.03 \
     --kd_weight 0.3 \
     --kd_loss_type "proposal_dtw" \
-    --image_resolution "low" \
+    --image_resolution "mid" \
     --projector_config_path "./config/projector_config.json" \
-    --projector_lr 5e-5 \
+    --projector_lr 5e-5

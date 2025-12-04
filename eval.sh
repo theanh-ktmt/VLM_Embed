@@ -1,4 +1,14 @@
-python  eval_mmeb.py  --model_name /workspace/ComfyUI/models/gligen/VLM_Embed/training/no_deepspeed_propose_kd_weight_1/checkpoint-final --encode_output_path  ./MMEB-evaloutputs/test_propose/  --pooling  eos  --lora --lora_r 32 --lora_alpha 64 --normalize   True  --bf16  --dataset_name  TIGER-Lab/MMEB-eval  --subset_name A-OKVQA --dataset_split  test  --per_device_eval_batch_size  32  --image_dir  eval_images/ --tgt_prefix_mod
-# python  eval_mmeb.py  --model_name raghavlite/B3_Qwen2_2B --encode_output_path  ./encoded_data/B2_Qwen2_2B_0/  --pooling  eos  --normalize  True  --lora  --lora_r  8  --bf16  --dataset_name  TIGER-Lab/MMEB-eval  --subset_name  HatefulMemes --dataset_split  test  --per_device_eval_batch_size  4  --image_dir  ./eval_images --tgt_prefix_mod
-# rm -rf ./MMEB-evaloutputs/B2_Qwen2_2B_v0/
-# python  eval_mmeb.py  --model_name llava-hf/llava-onevision-qwen2-0.5b-ov-hf --encode_output_path  ./MMEB-evaloutputs/llava-0.5B_raw/  --pooling  eos  --normalize  True  --bf16  --dataset_name  TIGER-Lab/MMEB-eval  --subset_name  HatefulMemes --dataset_split  test  --per_device_eval_batch_size  4  --image_dir  eval_images/ --image_resolution low
+python eval_mmeb.py \
+    --model_name /workspace/ComfyUI/models/gligen/VLM_Embed/training/propose_cls/checkpoint-epoch-0 \
+    --encode_output_path ./MMEB-evaloutputs/test_mscoco_v2/ \
+    --lora --lora_r 64 --lora_alpha 64 \
+    --pooling eos \
+    --model_backbone llava_qwen2 \
+    --normalize True \
+    --bf16 \
+    --dataset_name TIGER-Lab/MMEB-eval \
+    --subset_name  MSCOCO \
+    --dataset_split test \
+    --per_device_eval_batch_size 16 \
+    --image_dir eval_images/ \
+    --tgt_prefix_mod

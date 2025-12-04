@@ -58,7 +58,7 @@ def process_image(image, resolution, max_dim=1344):
     if resolution == "high":
         target_max = 1344
     elif resolution == "mid":
-        target_max = 672
+        target_max = 768
     elif resolution == "low":
         target_max = 448
     else:
@@ -291,7 +291,6 @@ class DistillationDataset(Dataset):
                 print_rank("Preprocessed WebQA to remove <image_1> tokens in queries.")
             total_samples = len(subset_data)
             num_samples_to_keep = math.ceil(total_samples * self.data_args.percent_data)
-            subset_data = subset_data.shuffle(seed=42)
             subset_data = subset_data.select(range(num_samples_to_keep))
             subset_data = subset_data.add_column("pos_text_instruction", [POS_MOD_DICT.get(subset, "") + text for text in subset_data['pos_text']])
             subset_data = subset_data.remove_columns(set(['neg_text', 'neg_image_path']) & set(subset_data.column_names))
