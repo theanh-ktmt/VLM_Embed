@@ -350,6 +350,8 @@ class SoftDTW(torch.nn.Module):
 
         if self.normalize:
             # Stack everything up and run
+            print("SoftDTW: Using normalization")
+            print(f"X: {X.shape}, Y: {Y.shape}")
             x = torch.cat([X, X, Y])
             y = torch.cat([Y, X, Y])
             D = self.dist_func(x, y)

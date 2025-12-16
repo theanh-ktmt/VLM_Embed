@@ -148,17 +148,17 @@ class Trainer:
                 self.lr_scheduler.step()
                 self.optimizer.zero_grad()
             
-            if is_main_process():
-                progress_bar.set_postfix({
-                    'loss': f"{batch_loss:.4f}",
-                    'kd_loss': f"{batch_kd_loss:.4f}",
-                    'contrastive_loss': f"{batch_contrastive_loss:.4f}",
-                    'kd_rkd_loss': f"{batch_kd_rkd_loss:.4f}",
-                    'ot_loss': f"{batch_ot_loss:.4f}",
-                    'kd_dtw_loss': f"{batch_kd_dtw_loss:.4f}",
-                    'lr': f"{self.lr_scheduler.get_last_lr()[0]:.6f}",
-                })
-                progress_bar.update(1)
+                if is_main_process():
+                    progress_bar.set_postfix({
+                        'loss': f"{batch_loss:.4f}",
+                        'kd_loss': f"{batch_kd_loss:.4f}",
+                        'contrastive_loss': f"{batch_contrastive_loss:.4f}",
+                        'kd_rkd_loss': f"{batch_kd_rkd_loss:.4f}",
+                        'ot_loss': f"{batch_ot_loss:.4f}",
+                        'kd_dtw_loss': f"{batch_kd_dtw_loss:.4f}",
+                        'lr': f"{self.lr_scheduler.get_last_lr()[0]:.6f}",
+                    })
+                    progress_bar.update(1)
                 
             torch.cuda.empty_cache()
         progress_bar.close()

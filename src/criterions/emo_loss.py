@@ -101,7 +101,7 @@ class EMOLoss(nn.Module):
         )
         total_loss = self.kd_loss_weight * contrastive_loss + (1 - self.kd_loss_weight) * (self.ot_loss + self.attention_loss)
         return {
-            'total_loss': total_loss,
+            'loss': total_loss,
             'contrastive_loss': contrastive_loss,
             'ot_loss': self.ot_loss,
             'kd_loss': self.attention_loss + self.ot_loss

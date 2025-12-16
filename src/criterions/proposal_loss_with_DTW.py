@@ -5,6 +5,7 @@ import torch.distributed as dist
 from torch import Tensor
 from .soft_DTW import SoftDTW
 import logging
+from tslearn.metrics import SoftDTWLossPyTorch
 
 logging.getLogger("numba").setLevel(logging.ERROR)
 
@@ -20,7 +21,7 @@ class ProposalLossWithDTW(nn.Module):
         self.OT_max_iter = 100
         self.epsilon = 1e-9
         self.ot_dist_type = 'cosine'
-        self.dtw_criterion = SoftDTW(use_cuda=True, gamma=0.0001, normalize=False)
+        self.dtw_criterion = SoftDTWLossPyTorch(gamma=0.1, normalize=True)
         self.mse_loss = nn.MSELoss(reduction='mean')
         if dist.is_initialized():
             self.world_size = dist.get_world_size()
@@ -112,26 +113,28 @@ class ProposalLossWithDTW(nn.Module):
                         cur_idx_pos_img += 1
         self.kd_loss_dtw_image = self.kd_loss_dtw_image / batch_size
 
-        self.kd_loss_dtw = self.kd_loss_mse_seq + 0.1 * self.kd_loss_dtw_image
+        self.kd_loss_dtw = self.kd_loss_mse_seq + 0.5 * self.kd_loss_dtw_image
 
         # OT loss
-        topk_token_text_results = self.extract_top_k_text_token(input_data, teacher_qry_attention, teacher_pos_attention, num_text_qry_tokens, num_text_pos_tokens)
+        # topk_token_text_results = self.extract_top_k_text_token(input_data, teacher_qry_attention, teacher_pos_attention, num_text_qry_tokens, num_text_pos_tokens)
+        topk_token_text_results = self.extract_top_k_text_token(input_data, teacher_qry_attention, teacher_pos_attention)
         self.ot_loss = self.compute_ot_loss(student_qry_output, student_pos_output, teacher_qry_output, teacher_pos_output, distiller, input_data, topk_token_text_results)
-        total_loss = contrastive_loss + self.kd_loss_weight * (self.kd_loss_rkd + self.kd_loss_mse_seq + 0.1 * self.kd_loss_dtw_image + 0.5 * self.ot_loss)
+        total_loss = contrastive_loss + self.kd_loss_weight * (self.kd_loss_rkd + self.kd_loss_mse_seq + 0.5 * self.kd_loss_dtw_image + 0.5 * self.ot_loss)
         # total_loss = contrastive_loss + self.kd_loss_weight *(0.1 * self.attn_loss)
         return {
             "loss": total_loss, 
             "contrastive_loss": contrastive_loss,
-            "kd_loss": self.kd_loss_rkd + self.kd_loss_mse_seq + 0.1 * self.kd_loss_dtw_image + 0.5 * self.ot_loss,
+            "kd_loss": self.kd_loss_rkd + self.kd_loss_mse_seq + 0.5 * self.kd_loss_dtw_image + 0.5 * self.ot_loss,
             "kd_loss_rkd": self.kd_loss_rkd,
             "kd_loss_dtw": self.kd_loss_dtw,
             "ot_loss": self.ot_loss,
         }
 
-    def extract_top_k_text_token(self, input_data, teacher_qry_attention, teacher_pos_attention, num_text_qry_tokens, num_text_pos_tokens):
+    def extract_top_k_text_token(self, input_data, teacher_qry_attention, teacher_pos_attention, threshold=0.8):
         VISION_START_TOKEN_ID = 151652
         VISION_END_TOKEN_ID = 151656
         BOS_TOKEN_ID = 151643
+        
         teacher_qry_input_ids = input_data['teacher_inputs']['qry']['input_ids']
         teacher_pos_input_ids = input_data['teacher_inputs']['pos']['input_ids']
         batch_size, qry_len = teacher_qry_input_ids.size()
@@ -151,22 +154,56 @@ class ProposalLossWithDTW(nn.Module):
             qry_imp = qry_importance[i]
             pos_imp = pos_importance[i]
             
+            # Mask để chỉ lấy text tokens (loại bỏ vision tokens và BOS)
             qry_mask = ((qry_ids < VISION_START_TOKEN_ID) | (qry_ids > VISION_END_TOKEN_ID)) & (qry_ids != BOS_TOKEN_ID)
             pos_mask = ((pos_ids < VISION_START_TOKEN_ID) | (pos_ids > VISION_END_TOKEN_ID)) & (pos_ids != BOS_TOKEN_ID)
-
-            qry_imp = qry_imp * qry_mask.float()
-            pos_imp = pos_imp * pos_mask.float()
-            qry_topk_idx = torch.topk(qry_imp, min(num_text_qry_tokens[i]//2, int(qry_mask.sum().item()))).indices
-            pos_topk_idx = torch.topk(pos_imp, min((num_text_pos_tokens[i]+1)//2, int(pos_mask.sum().item()))).indices
-
-            qry_topk = [(int(idx), int(qry_ids[idx]), float(qry_imp[idx])) for idx in qry_topk_idx if qry_mask[idx]]
-            pos_topk = [(int(idx), int(pos_ids[idx]), float(pos_imp[idx])) for idx in pos_topk_idx if pos_mask[idx]]
-
+            
+            # Áp dụng mask
+            qry_imp_masked = qry_imp * qry_mask.float()
+            pos_imp_masked = pos_imp * pos_mask.float()
+            
+            # Loại bỏ token cuối cùng khỏi việc tính toán (vì sẽ luôn được thêm vào)
+            qry_imp_without_last = qry_imp_masked.clone()
+            qry_imp_without_last[-1] = 0
+            pos_imp_without_last = pos_imp_masked.clone()
+            pos_imp_without_last[-1] = 0
+            
+            # Tính tổng attention (không bao gồm token cuối)
+            qry_total = qry_imp_without_last.sum()
+            pos_total = pos_imp_without_last.sum()
+            
+            # Sort và chọn tokens cho query
+            qry_sorted_imp, qry_sorted_idx = torch.sort(qry_imp_without_last, descending=True)
+            qry_cumsum = torch.cumsum(qry_sorted_imp, dim=0)
+            qry_target = qry_total * threshold
+            qry_num_tokens = (qry_cumsum < qry_target).sum() + 1  # +1 để đảm bảo vượt qua threshold
+            qry_selected_idx = qry_sorted_idx[:qry_num_tokens]
+            
+            # Sort và chọn tokens cho positive
+            pos_sorted_imp, pos_sorted_idx = torch.sort(pos_imp_without_last, descending=True)
+            pos_cumsum = torch.cumsum(pos_sorted_imp, dim=0)
+            pos_target = pos_total * threshold
+            pos_num_tokens = (pos_cumsum < pos_target).sum() + 1
+            pos_selected_idx = pos_sorted_idx[:pos_num_tokens]
+            
+            qry_imp[-1] = 1.0
+            pos_imp[-1] = 1.0
+            
+            # Thêm token cuối vào kết quả
+            qry_selected_idx = torch.cat([qry_selected_idx, torch.tensor([qry_len - 1], device=qry_selected_idx.device)])
+            pos_selected_idx = torch.cat([pos_selected_idx, torch.tensor([pos_len - 1], device=pos_selected_idx.device)])
+            
+            # Tạo kết quả với mask để loại bỏ các token không hợp lệ
+            qry_topk = [(int(idx), int(qry_ids[idx]), float(qry_imp[idx])) 
+                        for idx in qry_selected_idx if qry_mask[idx] or idx == qry_len - 1]
+            pos_topk = [(int(idx), int(pos_ids[idx]), float(pos_imp[idx])) 
+                        for idx in pos_selected_idx if pos_mask[idx] or idx == pos_len - 1]
+            
             results.append({
                 "qry_topk": qry_topk,
-                "pos_topk": pos_topk
+                "pos_topk": pos_topk,
             })
-
+        
         return results
     
     def extract_student_indices(self, input_data, topk_results):
