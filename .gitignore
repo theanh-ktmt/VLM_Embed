@@ -6,3 +6,7 @@ __pycache__
 .venv
 vlm
 training/
+logs/
+wandb/
+*.log
+eval_outputs/
