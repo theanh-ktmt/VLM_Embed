@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.distributed as dist
 import torch.nn.functional as F
 
-class CKD(nn.Module):
+class CKDLoss(nn.Module):
     def __init__(self, args):
-        super(CKD, self).__init__()
+        super(CKDLoss, self).__init__()
         self.args = args
         self.kd_loss_weight = 0.3
         self.distance_weight = 0.5
