@@ -7,6 +7,11 @@ import time
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 
+# --- FIX 1: Tắt đa luồng Tokenizer/OMP để tránh Deadlock ---
+# Phải đặt trước khi import torch hoặc transformers
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -34,23 +39,27 @@ logger = logging.getLogger(__name__)
 
 def setup_logging(training_args: TrainingArguments) -> None:
     """Configures logging for the training process."""
+    # Log INFO cho tất cả rank lúc khởi tạo để debug việc bị treo
+    log_level = logging.INFO
+    
     logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        format=f"[Rank {training_args.local_rank}] %(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if training_args.local_rank in [-1, 0] else logging.WARN,
+        level=log_level,
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-    if training_args.local_rank not in [-1, 0]:
-        logger.setLevel(logging.WARN)
-    else:
-        logger.setLevel(logging.INFO)
+    logger.setLevel(log_level)
     
-    # Also set transformers verbosity
+    # Set transformers verbosity
+    import transformers
     if training_args.local_rank in [-1, 0]:
-        import transformers
         transformers.utils.logging.set_verbosity_info()
-        transformers.utils.logging.enable_default_handler()
-        transformers.utils.logging.enable_explicit_format()
+    else:
+        # Sau khi init xong có thể giảm bớt log của slave rank nếu muốn
+        transformers.utils.logging.set_verbosity_error()
+        
+    transformers.utils.logging.enable_default_handler()
+    transformers.utils.logging.enable_explicit_format()
 
 def ddp_setup() -> None:
     """Initializes distributed data parallel group."""
@@ -82,6 +91,27 @@ def to_device(obj, device):
         return obj.to(device)
     return obj
 
+def download_artifacts(model_args: ModelArguments):
+    """
+    Hàm hỗ trợ tải trước artifacts trên Rank 0 để đưa vào cache.
+    Tránh lỗi 404/Connection Refused khi nhiều GPU cùng gọi API.
+    """
+    logger.info("  [Pre-load] Starting artifact download...")
+    if model_args.model_name:
+        try:
+            logger.info(f"  [Pre-load] Downloading Config for {model_args.model_name}")
+            AutoConfig.from_pretrained(model_args.model_name)
+            
+            logger.info(f"  [Pre-load] Downloading Tokenizer for {model_args.model_name}")
+            AutoTokenizer.from_pretrained(model_args.model_name)
+            
+            logger.info(f"  [Pre-load] Downloading Processor for {model_args.model_name}")
+            AutoProcessor.from_pretrained(model_args.model_name)
+        except Exception as e:
+            logger.warning(f"  [Pre-load] Warning: Some artifacts failed to pre-download: {e}")
+            # Không crash ở đây, để code chính tự xử lý sau
+    logger.info("  [Pre-load] Finished.")
+
 def save_checkpoint(
     output_dir: str,
     epoch: int,
@@ -110,19 +140,35 @@ def save_checkpoint(
         student.save_pretrained(ckpt_dir)
         logger.info("Saved LoRA adapter model.")
     else:
-        student.encoder.save_pretrained(ckpt_dir)
-        logger.info("Saved full student model.")
+        # Check structure safely
+        if hasattr(student, "encoder"):
+            student.encoder.save_pretrained(ckpt_dir)
+        else:
+            try:
+                student.save_pretrained(ckpt_dir)
+            except:
+                torch.save(student.state_dict(), os.path.join(ckpt_dir, "pytorch_model.bin"))
+        logger.info("Saved student model.")
     
     # Save Projector
     projector_dir = os.path.join(ckpt_dir, "mm_projector.pth")
     try:
-        if model_args.model_backbone in ["llava_onevision", "llava_two_vision"]:
-            torch.save(student.encoder.model.multi_modal_projector.state_dict(), projector_dir)
+        projector_weights = None
+        if hasattr(student, "encoder") and hasattr(student.encoder, "model"):
+             # Common structures
+             if hasattr(student.encoder.model, "multi_modal_projector"):
+                 projector_weights = student.encoder.model.multi_modal_projector.state_dict()
+             elif hasattr(student.encoder.model, "model") and hasattr(student.encoder.model.model, "mm_projector"):
+                 projector_weights = student.encoder.model.model.mm_projector.state_dict()
+        
+        if projector_weights is not None:
+            torch.save(projector_weights, projector_dir)
+            logger.info(f"Saved projector weights to {projector_dir}")
         else:
-            torch.save(student.encoder.model.model.mm_projector.state_dict(), projector_dir)
-        logger.info(f"Saved projector weights to {projector_dir}")
-    except AttributeError:
-        logger.warning("Could not find mm_projector to save separate weights, skipping.")
+             # Just a warning, not an error
+             logger.warning("Could not locate projector weights in standard paths, skipping explicit projector save.")
+    except AttributeError as e:
+        logger.warning(f"Could not find mm_projector to save separate weights: {e}")
 
     # Save tokenizer and config
     try:
@@ -142,7 +188,7 @@ def save_checkpoint(
         logger.warning(f"Error saving config/tokenizer: {e}")
 
 def main():
-    # Setup DDP first, before anything else
+    # Setup DDP first
     ddp_setup()
 
     parser = HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
@@ -151,12 +197,10 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    # Setup logging
     setup_logging(training_args)
     
     logger.info(f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
                 f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16 or training_args.bf16}")
-    logger.info(f"Training/evaluation parameters {training_args}")
 
     # Initialize WandB
     if is_main_process() and "wandb" in training_args.report_to:
@@ -170,6 +214,23 @@ def main():
             }
         )
 
+    # --- FIX 2: ĐỒNG BỘ HÓA TẢI FILE ---
+    logger.info("Handling artifact downloading...")
+    
+    # Logic: Rank 0 tải trước -> Barrier -> Mọi người cùng load từ cache
+    if dist.is_initialized():
+        if is_main_process():
+            logger.info("Rank 0: Pre-downloading artifacts to cache to prevent races...")
+            download_artifacts(model_args)
+            logger.info("Rank 0: Download complete. Releasing barrier.")
+        
+        # Tất cả GPU chờ Rank 0
+        dist.barrier()
+        logger.info(f"Rank {training_args.local_rank}: Barrier passed. Cache should be ready.")
+    else:
+        # Chạy đơn lẻ
+        download_artifacts(model_args)
+
     # Prepare Data
     logger.info("Preparing dataset...")
     train_dataset = DistillationDataset(data_args, model_args)
@@ -181,6 +242,7 @@ def main():
 
     # Load Model (Distiller)
     logger.info("Loading Distiller model...")
+    # Lúc này an toàn để load song song
     distiller = Distiller(model_args, training_args)
 
     # Prepare Collator
@@ -207,16 +269,14 @@ def main():
     # Optimizer
     logger.info("Setting up optimizer...")
     
-    # Freeze/Unfreeze parameters
     trainable_params = []
     num_trainable = 0
-    for n, p in distiller.student.named_parameters():
+    
+    model_to_optimize = distiller.module if hasattr(distiller, "module") else distiller
+    for n, p in model_to_optimize.student.named_parameters():
         if "mm_projector" in n or "multi_modal_projector" in n:
              p.requires_grad = True
         
-        # Example logic from previous script: lock lm_head, etc. 
-        # Ideally this logic should be inside Distiller or specific model wrapper, 
-        # but porting here for consistency with prev scripts.
         if "lm_head" in n:
              p.requires_grad = False
              
@@ -229,7 +289,7 @@ def main():
     logger.info(f"Number of trainable parameters: {num_trainable}")
 
     optimizer = AdamW(
-        [p for p in distiller.student.parameters() if p.requires_grad],
+        trainable_params,
         lr=training_args.learning_rate,
         weight_decay=training_args.weight_decay,
         betas=(training_args.adam_beta1, training_args.adam_beta2),
@@ -237,8 +297,8 @@ def main():
     )
 
     if model_args.projector_config_path is not None:
-         # If special handling for projector optimizer groups is needed
-         optimizer = distiller.add_optimizer_param_group(optimizer)
+         if hasattr(distiller, "add_optimizer_param_group"):
+            optimizer = distiller.add_optimizer_param_group(optimizer)
 
     # Move model to device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -248,7 +308,7 @@ def main():
     distiller = distiller.to(device)
     
     if dist.is_initialized():
-        distiller = DDP(distiller, device_ids=[int(os.environ["LOCAL_RANK"])], find_unused_parameters=True) # find_unused might be needed
+        distiller = DDP(distiller, device_ids=[int(os.environ["LOCAL_RANK"])], find_unused_parameters=True)
 
     # Scheduler
     num_update_steps_per_epoch = len(train_dataloader) // training_args.gradient_accumulation_steps
@@ -266,12 +326,12 @@ def main():
     criterion = criterion.to(device)
 
     # Training Loop
-    logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
-    logger.info(f"  Num Epochs = {training_args.num_train_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}")
-    logger.info(f"  Gradient Accumulation steps = {training_args.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {max_train_steps}")
+    if is_main_process():
+        logger.info("***** Running training *****")
+        logger.info(f"  Num examples = {len(train_dataset)}")
+        logger.info(f"  Num Epochs = {training_args.num_train_epochs}")
+        logger.info(f"  Gradient Accumulation steps = {training_args.gradient_accumulation_steps}")
+        logger.info(f"  Total optimization steps = {max_train_steps}")
 
     global_step = 0
     start_time = time.time()
@@ -313,7 +373,6 @@ def main():
                         "train/lr": lr_scheduler.get_last_lr()[0],
                         "train/epoch": epoch + (step + 1) / len(train_dataloader),
                     }
-                    # Add detailed losses if available
                     for k, v in outputs.items():
                         if k != "loss" and isinstance(v, torch.Tensor):
                             metrics[f"train/{k}"] = v.item()
