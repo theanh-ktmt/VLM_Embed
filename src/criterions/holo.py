@@ -35,7 +35,7 @@ class HoloDistillLoss(nn.Module):
         self.rkd_distance_weight = getattr(args, "rkd_distance_weight", 1.0)
         self.rkd_angle_weight = getattr(args, "rkd_angle_weight", 2.0)
         # global_rkd_weight=2.0: Safe base weight for Full-Dimension RKD.
-        self.global_rkd_weight = getattr(args, "global_rkd_weight", 2.0)
+        self.global_rkd_weight = getattr(args, "global_rkd_weight", 3.0)
 
         # --- Matryoshka Config ---
         # Default to [128, 768] (Core, Detail) if not provided
@@ -46,7 +46,7 @@ class HoloDistillLoss(nn.Module):
 
         # Internal Spectral Weights: [Core Multiplier, Detail Multiplier]
         # We enforce 2x importance on the Core (128) slice for RKD stability.
-        self.spectral_multipliers = [2.0, 1.0]
+        self.spectral_multipliers = [3.0, 1.0]
 
     # ==========================
     # Part 1: RKD Modules (Global)

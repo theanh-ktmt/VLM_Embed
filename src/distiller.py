@@ -145,6 +145,55 @@ def create_semi_orthogonal_matrix(tensor: torch.Tensor) -> torch.Tensor:
     return tensor
 
 
+# ... [Imports remain the same] ...
+
+# Add this new class before the Distiller class
+class HoloProjector(nn.Module):
+    """
+    A geometric projector designed for HoloDistill/FGW losses.
+    It uses an RMSNorm-guided Residual MLP to align student topology 
+    to teacher topology without destroying the manifold structure.
+    """
+    def __init__(self, in_dim: int, out_dim: int, use_residual: bool = True):
+        super().__init__()
+        self.use_residual = use_residual
+        
+        # 1. Pre-conditioning: RMSNorm stabilizes the incoming student distribution
+        self.norm = nn.RMSNorm(in_dim, eps=1e-6)
+        
+        # 2. Expansion / Alignment Layer
+        self.layer1 = nn.Linear(in_dim, out_dim, bias=False)
+        
+        # 3. Refinement Layer (The "Holographic" correction)
+        # We project to an intermediate dimension (can be same as out_dim)
+        self.act = nn.GELU()
+        self.layer2 = nn.Linear(out_dim, out_dim, bias=False)
+        
+        # Initialize with semi-orthogonality to preserve angles initially
+        create_semi_orthogonal_matrix(self.layer1.weight)
+        # Initialize layer2 closer to identity behavior for stability
+        nn.init.orthogonal_(self.layer2.weight, gain=0.1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [Batch, Seq, Student_Dim]
+        
+        # Pre-norm
+        x_norm = self.norm(x)
+        
+        # First alignment (Global coarse alignment)
+        aligned = self.layer1(x_norm)
+        
+        # Refinement (Local topology unfolding)
+        refined = self.layer2(self.act(aligned))
+        
+        if self.use_residual:
+            # ResNet-style: The linear mapping provides the "anchor", 
+            # the MLP provides the "detail".
+            return aligned + refined
+        return refined
+
+
+
 class Distiller(nn.Module):
     """
     A wrapper class for Knowledge Distillation that manages student and teacher models.
@@ -275,16 +324,16 @@ class Distiller(nn.Module):
             ).to(dtype=torch.bfloat16)
             logger.info("Initialized t2s_ckd projector")
         if 'holo' in kd_loss_type:
-            self.holo_projector = nn.Linear(
-                self.student_hidden_dim, 
-                self.teacher_hidden_dim, 
-                bias=False
-            )
-            # Use semi-orthogonal init to preserve the student's internal topology 
-            # as much as possible during the projection.
-            create_semi_orthogonal_matrix(self.holo_projector.weight)
-            self.holo_projector = self.holo_projector.to(dtype=torch.bfloat16)
+            logger.info("Initializing Enhanced HoloProjector (Residual MLP)...")
+            
+            self.holo_projector = HoloProjector(
+                in_dim=self.student_hidden_dim,
+                out_dim=self.teacher_hidden_dim,
+                use_residual=True
+            ).to(dtype=torch.bfloat16)
+            
             logger.info("Initialized holo_projector (Student -> Teacher) for HoloDistill")
+        # -------------------------
         # -------------------------
 
     def get_student_processor(self) -> ProcessorMixin:
