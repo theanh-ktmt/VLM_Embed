@@ -141,10 +141,6 @@ class HoloDistillArguments:
     """
     Arguments specific to HoloDistill Knowledge Distillation.
     """
-    temperature: float = field(
-        default=0.07,
-        metadata={"help": "Temperature for softmax in contrastive loss"}
-    )
     holo_alpha: float = field(
         default=0.8,
         metadata={"help": "Alpha for blending feature and structure loss in FGW"}
@@ -174,6 +170,31 @@ class HoloDistillArguments:
         metadata={"help": "List of loss weights for each Matryoshka dimension"}
     )
 
+@dataclass
+class SSAAguments:
+    """
+    Arguments specific to SSA Knowledge Distillation.
+    """
+    variance_threshold: float = field(
+        default=0.95,
+        metadata={"help": "Threshold for variance in SSA distillation loss"}
+    )
+    gap_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for the gap loss in SSA distillation loss"}
+    )
+    ssa_matryoshka_dims: List[int] = field(
+        default_factory=lambda: [128, 768],
+        metadata={"help": "List of dimensions for Matryoshka-style training"}
+    )
+    spectral_variance_threshold: float = field(
+        default=0.95,
+        metadata={"help": "Threshold for variance in SSA distillation loss"}
+    )
+    modality_gap_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for the gap loss in SSA distillation loss"}
+    )
 
 # =============================================================================
 #  Main Argument Classes
@@ -449,7 +470,7 @@ class DataArguments:
 
 
 @dataclass
-class TrainingArguments(DistillationArguments, RKDArguments, CKDArguments, ProposalArguments, EMOArguments, EMKDArguments, HoloDistillArguments, HFTrainingArguments):
+class TrainingArguments(DistillationArguments, RKDArguments, CKDArguments, ProposalArguments, EMOArguments, EMKDArguments, SSAAguments, HoloDistillArguments, HFTrainingArguments):
     """
     Training arguments specific to this project, extending HuggingFace's TrainingArguments
     and our custom mixins.

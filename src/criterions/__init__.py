@@ -8,6 +8,8 @@ from .ckd import CKDLoss
 from .em_kd_llava_ov import EMKDLLavaLoss
 from .ckd import CKDLoss
 from .holo import HoloDistillLoss
+from .mse import MSEKD
+from .ssa import SSALoss
 
 criterion_list = {
     "contrastive_rkd": ContrastiveLossWithRKD,
@@ -17,9 +19,10 @@ criterion_list = {
     "em_kd": EMKDLoss,
     "em_kd_llava_ov": EMKDLLavaLoss,
     "ckd": CKDLoss,
-    "mse": nn.MSELoss,
+    "mse": MSEKD,
     "ckd": CKDLoss,
-    "holo": HoloDistillLoss
+    "holo": HoloDistillLoss,
+    "ssa": SSALoss
 }
 
 def build_criterion(args):

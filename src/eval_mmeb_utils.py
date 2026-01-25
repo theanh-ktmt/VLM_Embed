@@ -15,7 +15,7 @@ from src.data.dataset.mmeb_dataset import EvalDataset
 from src.data.collator.eval_collator import EvalCollator
 from src.model.processor import COLPALI
 from src.utils import print_rank
-from src.evaluation.mmeb_baselines.eval_utils import get_pred
+from evaluation.mmeb_baselines.eval_utils import get_pred
 
 logger = logging.getLogger(__name__)
 
@@ -97,28 +97,27 @@ def encode_and_save(model, loader, output_path, dataset_len, desc, device):
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                # Detect if it's query or target based on keys or passed arg
-                if "input_ids" in batch: # Basic check, adjust based on collator
-                    if "pixel_values" in batch and batch["pixel_values"] is not None:
-                         # Likely multimodal
-                         pass
+                # [FIX] Logic to determine if we are encoding Query or Target based on 'desc' string
+                # The EvalCollator returns generic keys, so we rely on the caller's description.
                 
-                # We assume the model handles 'qry' or 'tgt' args or we call forward directly
-                # Based on MMEBModel structure, it usually takes kwargs.
-                # The collator usually returns specific keys. 
-                # Let's check keys to decide call.
-                if "pixel_values" in batch: # It is MMEB compatible batch
-                    # HACK: The collator logic in EvalCollator returns generic keys. 
-                    # We need to know if this is query or target loader.
-                    # MMEBModel forward signature: forward(qry=None, tgt=None)
-                    # We will rely on the caller to name the loader/context.
-                    if "qry" in desc.lower():
-                        output = model(qry=batch)
+                is_query = "qry" in desc.lower()
+                
+                if is_query:
+                    # For Query: Call model(qry=batch)
+                    output = model(qry=batch)
+                    if "qry_reps" in output:
                         reps = output["qry_reps"]
                     else:
-                        output = model(tgt=batch)
+                        # Fallback for some model outputs structure
+                        reps = output if isinstance(output, torch.Tensor) else output[0]
+                else:
+                    # For Target: Call model(tgt=batch)
+                    output = model(tgt=batch)
+                    if "tgt_reps" in output:
                         reps = output["tgt_reps"]
-            
+                    else:
+                        reps = output if isinstance(output, torch.Tensor) else output[0]
+
             # Gather from all GPUs
             gathered_reps = gather_tensors(reps)
             encoded_list.append(gathered_reps.cpu())
@@ -135,119 +134,146 @@ def run_mmeb_evaluation(model, processor, model_args, data_args, training_args, 
     """
     Main entry point to run MMEB evaluation from main.py
     """
-    # Ensure model is in eval mode
     model.eval()
-    
     results_dict = {}
     
-    # Use eval specific args if provided, else fallback to subset_name (warning: usually different)
-    # We expect data_args.eval_subset_name to be populated
+    # Check if we have eval subsets
     eval_subsets = data_args.eval_subset_name if data_args.eval_subset_name else []
-    
     if not eval_subsets:
-        logger.warning("No eval_subset_name provided in DataArguments. Skipping MMEB evaluation.")
+        logger.warning("No eval_subset_name provided. Skipping MMEB evaluation.")
         return {}
 
-    eval_collator = EvalCollator(
-        data_args=data_args,
-        model_args=model_args,
-        processor=processor,
-    )
+    # =========================================================================
+    # [FIX] SWAP DATA ARGS FOR EVALUATION
+    # We must ensure EvalDataset loads 'MMEB-eval' (test), not 'MMEB-train' (original)
+    # =========================================================================
+    
+    # 1. Backup original training args
+    train_dataset_name = data_args.dataset_name
+    train_dataset_split = data_args.dataset_split
+    train_image_dir = data_args.image_dir
+    
+    # 2. Apply Evaluation overrides
+    # If eval_dataset_name is provided, use it. Otherwise keep (risk of error).
+    if data_args.eval_dataset_name:
+        data_args.dataset_name = data_args.eval_dataset_name
+    
+    # Force split to 'test' for MMEB-eval unless specified otherwise
+    # (MMEB-eval standard split is 'test', while MMEB-train is 'original')
+    data_args.dataset_split = "test" 
+    
+    # Switch image directory
+    if data_args.eval_image_dir:
+        data_args.image_dir = data_args.eval_image_dir
+        
+    logger.info(f"Context Switched for Eval -> Dataset: {data_args.dataset_name}, Split: {data_args.dataset_split}, Dir: {data_args.image_dir}")
+    # =========================================================================
 
-    # Make output dir
-    os.makedirs(data_args.encode_output_path, exist_ok=True)
+    try:
+        eval_collator = EvalCollator(
+            data_args=data_args,
+            model_args=model_args,
+            processor=processor,
+        )
 
-    for idx, subset in enumerate(eval_subsets):
-        if is_main_process():
-            logger.info(f"--- MMEB Eval: Processing {subset} ({idx+1}/{len(eval_subsets)}) ---")
+        # Make output dir
+        os.makedirs(data_args.encode_output_path, exist_ok=True)
 
-        encode_qry_path = os.path.join(data_args.encode_output_path, f"{subset}_qry")
-        encode_tgt_path = os.path.join(data_args.encode_output_path, f"{subset}_tgt")
-        score_path = os.path.join(data_args.encode_output_path, f"{subset}_score.json")
+        for idx, subset in enumerate(eval_subsets):
+            if is_main_process():
+                logger.info(f"--- MMEB Eval: Processing {subset} ({idx+1}/{len(eval_subsets)}) ---")
 
-        # 1. ENCODE QUERY
-        # Check if already encoded
-        if not (os.path.exists(encode_qry_path) and os.path.exists(encode_tgt_path)):
-            # Load Query Dataset
-            eval_qry_dataset = EvalDataset(
-                data_args=data_args,
-                model_args=model_args,
-                subset=subset,
-                text_field="qry_text",
-                img_path_field="qry_img_path",
-            )
-            
-            sampler = DistributedSampler(eval_qry_dataset, shuffle=False) if dist.is_initialized() else SequentialSampler(eval_qry_dataset)
-            
-            loader = DataLoader(
-                eval_qry_dataset,
-                batch_size=training_args.per_device_eval_batch_size,
-                sampler=sampler,
-                collate_fn=eval_collator,
-                num_workers=training_args.dataloader_num_workers,
-                pin_memory=True
-            )
-            
-            if not os.path.exists(encode_qry_path):
-                encoded_qry = encode_and_save(model, loader, encode_qry_path, len(eval_qry_dataset), f"Enc Qry {subset}", device)
+            encode_qry_path = os.path.join(data_args.encode_output_path, f"{subset}_qry")
+            encode_tgt_path = os.path.join(data_args.encode_output_path, f"{subset}_tgt")
+            score_path = os.path.join(data_args.encode_output_path, f"{subset}_score.json")
+
+            # --- 1. ENCODE QUERY ---
+            # Double check paths existence
+            if not (os.path.exists(encode_qry_path) and os.path.exists(encode_tgt_path)):
                 
-                if is_main_process():
-                    with open(encode_qry_path, "wb") as f:
-                        pickle.dump((encoded_qry, eval_qry_dataset.paired_data), f)
-            
+                # Initialize Dataset (Now uses the swapped data_args)
+                eval_qry_dataset = EvalDataset(
+                    data_args=data_args,
+                    model_args=model_args,
+                    subset=subset,
+                    text_field="qry_text",
+                    img_path_field="qry_img_path",
+                )
+                
+                sampler = DistributedSampler(eval_qry_dataset, shuffle=False) if dist.is_initialized() else SequentialSampler(eval_qry_dataset)
+                
+                loader = DataLoader(
+                    eval_qry_dataset,
+                    batch_size=training_args.per_device_eval_batch_size,
+                    sampler=sampler,
+                    collate_fn=eval_collator,
+                    num_workers=training_args.dataloader_num_workers,
+                    pin_memory=True
+                )
+                
+                if not os.path.exists(encode_qry_path):
+                    encoded_qry = encode_and_save(model, loader, encode_qry_path, len(eval_qry_dataset), f"Enc Qry {subset}", device)
+                    if is_main_process():
+                        with open(encode_qry_path, "wb") as f:
+                            pickle.dump((encoded_qry, eval_qry_dataset.paired_data), f)
+                
+                if dist.is_initialized(): dist.barrier()
+
+                # --- 2. ENCODE TARGET ---
+                eval_tgt_dataset = EvalDataset(
+                    data_args=data_args,
+                    model_args=model_args,
+                    subset=subset,
+                    text_field="tgt_text",
+                    img_path_field="tgt_img_path",
+                    mod_instruction=POS_MOD_DICT.get(subset, None) if data_args.tgt_prefix_mod else None,
+                )
+
+                sampler = DistributedSampler(eval_tgt_dataset, shuffle=False) if dist.is_initialized() else SequentialSampler(eval_tgt_dataset)
+
+                loader = DataLoader(
+                    eval_tgt_dataset,
+                    batch_size=training_args.per_device_eval_batch_size,
+                    sampler=sampler,
+                    collate_fn=eval_collator,
+                    num_workers=training_args.dataloader_num_workers,
+                    pin_memory=True
+                )
+
+                if not os.path.exists(encode_tgt_path):
+                    encoded_tgt = encode_and_save(model, loader, encode_tgt_path, len(eval_tgt_dataset), f"Enc Tgt {subset}", device)
+                    if is_main_process():
+                        with open(encode_tgt_path, "wb") as f:
+                            pickle.dump((encoded_tgt, eval_tgt_dataset.paired_data), f)
+                
+                if dist.is_initialized(): dist.barrier()
+
+            # --- 3. SCORING ---
+            if is_main_process():
+                if os.path.exists(score_path):
+                     with open(score_path, "r") as f:
+                        res = json.load(f)
+                        results_dict[subset] = res['acc']
+                        logger.info(f"Loaded cached score for {subset}: {res['acc']}")
+                else:
+                    try:
+                        score_dict = calculate_score_for_subset(subset, data_args, model_args, processor, encode_qry_path, encode_tgt_path, device)
+                        results_dict[subset] = score_dict['acc']
+                        with open(score_path, "w") as f:
+                            json.dump(score_dict, f, indent=4)
+                    except Exception as e:
+                        logger.error(f"Failed to score {subset}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        results_dict[subset] = 0.0
+
             if dist.is_initialized(): dist.barrier()
 
-            # 2. ENCODE TARGET
-            eval_tgt_dataset = EvalDataset(
-                data_args=data_args,
-                model_args=model_args,
-                subset=subset,
-                text_field="tgt_text",
-                img_path_field="tgt_img_path",
-                mod_instruction=POS_MOD_DICT.get(subset, None) if data_args.tgt_prefix_mod else None,
-            )
-
-            sampler = DistributedSampler(eval_tgt_dataset, shuffle=False) if dist.is_initialized() else SequentialSampler(eval_tgt_dataset)
-
-            loader = DataLoader(
-                eval_tgt_dataset,
-                batch_size=training_args.per_device_eval_batch_size,
-                sampler=sampler,
-                collate_fn=eval_collator,
-                num_workers=training_args.dataloader_num_workers,
-                pin_memory=True
-            )
-
-            if not os.path.exists(encode_tgt_path):
-                encoded_tgt = encode_and_save(model, loader, encode_tgt_path, len(eval_tgt_dataset), f"Enc Tgt {subset}", device)
-
-                if is_main_process():
-                    with open(encode_tgt_path, "wb") as f:
-                        pickle.dump((encoded_tgt, eval_tgt_dataset.paired_data), f)
-            
-            if dist.is_initialized(): dist.barrier()
-
-        # 3. CALCULATE SCORES (Rank 0 only)
-        if is_main_process():
-            if os.path.exists(score_path):
-                 with open(score_path, "r") as f:
-                    res = json.load(f)
-                    results_dict[subset] = res['acc']
-                    logger.info(f"Loaded cached score for {subset}: {res['acc']}")
-            else:
-                try:
-                    score_dict = calculate_score_for_subset(subset, data_args, model_args, processor, encode_qry_path, encode_tgt_path, device)
-                    results_dict[subset] = score_dict['acc']
-                    
-                    with open(score_path, "w") as f:
-                        json.dump(score_dict, f, indent=4)
-                except Exception as e:
-                    logger.error(f"Failed to score {subset}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    results_dict[subset] = 0.0
-
-        if dist.is_initialized(): dist.barrier()
+    finally:
+        # 3. Restore original args (Good practice, though script usually ends here)
+        data_args.dataset_name = train_dataset_name
+        data_args.dataset_split = train_dataset_split
+        data_args.image_dir = train_image_dir
 
     return results_dict
 
