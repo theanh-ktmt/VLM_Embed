@@ -45,13 +45,13 @@ class MSEKD(nn.Module):
             teacher_model.eval()
             teacher_qry_output = teacher_model.encode_input(teacher_qry_input)
             teacher_pos_output = teacher_model.encode_input(teacher_pos_input)
-            teacher_qry_reps, _ , teacher_qry_image_features, _ , teacher_qry_attention = teacher_qry_output
-            teacher_pos_reps, _ , teacher_pos_image_features, _ , teacher_pos_attention = teacher_pos_output
+            teacher_qry_reps, _, _, _ = teacher_qry_output
+            teacher_pos_reps, _, _, _ = teacher_pos_output
 
         student_qry_output = student_model.encode_input(student_qry_input)
         student_pos_output = student_model.encode_input(student_pos_input)
-        student_qry_reps, _ , student_qry_image_features, _ , student_qry_attention = student_qry_output
-        student_pos_reps, _ , student_pos_image_features, _ , student_pos_attention = student_pos_output
+        student_qry_reps, _, _, _ = student_qry_output
+        student_pos_reps, _, _, _ = student_pos_output
 
         if self.world_size > 1:
             all_student_qry_reps = self._dist_gather_tensor(student_qry_reps)
@@ -70,10 +70,9 @@ class MSEKD(nn.Module):
         projected_teacher_pos_reps = self.distiller.projectors["t2s_txt"](teacher_pos_reps)
         self.kd_loss_mse_seq = self.mse_loss(student_qry_reps, projected_teacher_qry_reps)
 
-
         total_loss = contrastive_loss + self.kd_loss_weight * self.kd_loss_mse_seq
         return {
-            "total_loss": total_loss, 
+            "loss": total_loss, 
             "contrastive_loss": contrastive_loss,
             "kd_loss": self.kd_loss_mse_seq,
         }
