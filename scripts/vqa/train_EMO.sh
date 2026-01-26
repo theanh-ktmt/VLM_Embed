@@ -2,11 +2,13 @@
 
 # GPU per node
 NUM_GPUS_PER_NODE=8
+LORA_R=64
+BATCH_SIZE=32
 
 # Configs
 TRAIN_SCRIPT="main.py"
-EXP_NAME="EMO_DocVQA_bs32"
-USE_FULLSET=false
+EXP_NAME="EMO_full_vqa_r${LORA_R}_bs${BATCH_SIZE}"
+USE_FULLSET=true
 
 if [ "$USE_FULLSET" = true ]; then
     SUBSETS=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
@@ -24,7 +26,7 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --teacher_model_name "raghavlite/B3_Qwen2_2B" \
     --lora True \
     --teacher_lora True \
-    --lora_r 2 \
+    --lora_r $LORA_R \
     --teacher_lora_r 8 \
     --teacher_pooling "eos" \
     --teacher_backbone "qwen2_vl" \
@@ -35,7 +37,7 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --dataset_split "original" \
     --image_dir "vlm2vec_train/MMEB-train" \
     --output_dir "training/$EXP_NAME" \
-    --per_device_train_batch_size 32 \
+    --per_device_train_batch_size $BATCH_SIZE \
     --gradient_accumulation_steps 1 \
     --learning_rate 1e-5 \
     --num_train_epochs 1 \

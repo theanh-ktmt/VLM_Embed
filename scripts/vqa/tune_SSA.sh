@@ -18,14 +18,14 @@ if [ "$USE_FULLSET" = true ]; then
     SUBSETS=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
     echo "Running with FULL dataset set."
 else
-    SUBSETS=("OK-VQA")
+    SUBSETS=("DocVQA")
     echo "Running with SINGLE dataset (DocVQA) for tuning efficiency."
 fi
 
 # Evaluation Subsets (Datasets to appear in WandB Table)
 # Note: Ensure these are space-separated for the eval script
-# EVAL_SUBSETS_ARR=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
-EVAL_SUBSETS_ARR=("OK-VQA")
+EVAL_SUBSETS_ARR=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
+# EVAL_SUBSETS_ARR=("DocVQA")
 
 EVAL_SUBSETS_STR="${EVAL_SUBSETS_ARR[*]}" # Join array to string
 
@@ -33,10 +33,23 @@ EVAL_SUBSETS_STR="${EVAL_SUBSETS_ARR[*]}" # Join array to string
 # Hyperparameter Grid
 # =========================================================================
 
-KD_WEIGHTS=(0.3 0.5 1.0)
-VAR_THRESHOLDS=(0.90 0.95 0.99)
-GAP_WEIGHTS=(0.1 1.0)
-MATRYOSHKA_OPTS=("64" "64 128") 
+# A. KD Weight
+# 0.1, 0.3: Subtle guidance.
+# 3.0: High Teacher dominance.
+KD_WEIGHTS=(0.1 0.3 3.0)
+
+# B. Spectral Variance Threshold
+# 0.80, 0.85: Aggressive filtering (ignoring bottom 15-20% of Teacher spectrum).
+VAR_THRESHOLDS=(0.80 0.85)
+
+# C. Modality Gap Weight
+# 0.5: Moderate.
+# 2.0: Strong constraint on Image-Text distance.
+GAP_WEIGHTS=(0.5 2.0)
+
+# D. Matryoshka Dimensions
+# [CORRECTION] Removed empty option. We strictly test Matryoshka-64 here.
+MATRYOSHKA_OPTS=("64")
 
 # =========================================================================
 # Tuning Loop
@@ -58,7 +71,8 @@ for kd_w in "${KD_WEIGHTS[@]}"; do
         
         # 2. Generate and Export Unique WandB ID
         # This ensures Training and Eval write to the exact same run
-        export WANDB_RUN_ID="SSA_${CURRENT_EXP_NAME}_$(date +%s)"
+        RAND_ID=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 6 | head -n 1)
+        export WANDB_RUN_ID="SSA_${kd_w}_${var_t}_${gap_w}_$(date +%Y%m%d_%H%M%S)_${RAND_ID}"
         export WANDB_PROJECT="$WANDB_PROJECT"
 
         echo "================================================================"
@@ -155,6 +169,6 @@ for kd_w in "${KD_WEIGHTS[@]}"; do
   done
 done
 
-# Cleanup temporary python script
-rm log_eval_results.py
-echo "All tuning experiments completed."
+# # Cleanup temporary python script
+# rm log_eval_results.py
+# echo "All tuning experiments completed."
