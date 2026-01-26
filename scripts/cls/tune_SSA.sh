@@ -8,7 +8,7 @@
 NUM_GPUS_PER_NODE=8
 TRAIN_SCRIPT="main.py"
 EVAL_SCRIPT="eval_mmeb.py"
-BASE_EXP_NAME="SSA_Tune_Full_VQA"
+BASE_EXP_NAME="SSA_Tune_Full_CLS"
 WANDB_PROJECT="vlm_distillation" # Ensure this matches what main.py uses
 
 # 1. Dataset Configuration
@@ -17,16 +17,16 @@ LORA_R=64
 BATCH_SIZE=32
 
 if [ "$USE_FULLSET" = true ]; then
-    SUBSETS=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
+    SUBSETS=("ImageNet_1K" "N24News" "HatefulMemes" "VOC2007" "SUN397")
     echo "Running with FULL dataset set."
 else
-    SUBSETS=("DocVQA")
-    echo "Running with SINGLE dataset (DocVQA) for tuning efficiency."
+    SUBSETS=("ImageNet_1K")
+    echo "Running with SINGLE dataset (ImageNet_1K) for tuning efficiency."
 fi
 
 # Evaluation Subsets (Datasets to appear in WandB Table)
 # Note: Ensure these are space-separated for the eval script
-EVAL_SUBSETS_ARR=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
+EVAL_SUBSETS_ARR=("ImageNet-1K" "N24News" "HatefulMemes" "VOC2007" "SUN397")
 EVAL_SUBSETS_STR="${EVAL_SUBSETS_ARR[*]}" # Join array to string
 
 # =========================================================================

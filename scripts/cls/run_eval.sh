@@ -6,11 +6,11 @@
 # Example: ./scripts/run_eval.sh training/RKD/checkpoint-final eval_outputs/RKD ImageNet_1K
 # =========================================================================
 # Experiment configurations
-EXP_NAME="EMKD_full_vqa_r64_bs32"
+EXP_NAME="EMO_full_cls_r64_bs32"
 MODEL_PATH="training/$EXP_NAME/checkpoint-final"
 OUTPUT_DIR=eval_outputs/$EXP_NAME
-# SUBSET="ImageNet-1K N24News HatefulMemes VOC2007 SUN397"
-SUBSET="OK-VQA A-OKVQA DocVQA InfographicsVQA ChartQA Visual7W"
+SUBSET="ImageNet-1K N24News HatefulMemes VOC2007 SUN397"
+# SUBSET="OK-VQA A-OKVQA DocVQA InfographicsVQA ChartQA Visual7W"
 # Absolute paths
 REPO_ROOT=$(pwd)
 export PYTHONPATH=$REPO_ROOT:$PYTHONPATH
