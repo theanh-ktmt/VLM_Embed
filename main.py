@@ -32,6 +32,7 @@ from src.distiller import Distiller, DistillationCollator, DistillationDataset
 from src.arguments import DataArguments, ModelArguments, TrainingArguments
 from src.utils import print_rank, print_master
 from src.criterions import build_criterion
+from src.eval_mmeb_utils import run_mmeb_evaluation
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +426,9 @@ def main():
 
     # Final Save
     save_checkpoint(training_args.output_dir, int(training_args.num_train_epochs), distiller, model_args, folder_name="checkpoint-final")
+    if dist.is_initialized():
+        dist.barrier()  # <--- Crucial: Wait for Rank 0 to finish saving!
+    # =========================================================================
     
     if is_main_process() and "wandb" in training_args.report_to:
         wandb.finish()
@@ -433,3 +437,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
