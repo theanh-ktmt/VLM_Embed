@@ -10,6 +10,7 @@ from .ckd import CKDLoss
 from .holo import HoloDistillLoss
 from .mse import MSEKD
 from .ssa import SSALoss
+from .contrastive import ContrastiveLoss
 
 criterion_list = {
     "contrastive_rkd": ContrastiveLossWithRKD,
@@ -22,7 +23,8 @@ criterion_list = {
     "mse": MSEKD,
     "ckd": CKDLoss,
     "holo": HoloDistillLoss,
-    "ssa": SSALoss
+    "ssa": SSALoss,
+    "contrastive": ContrastiveLoss,
 }
 
 def build_criterion(args):

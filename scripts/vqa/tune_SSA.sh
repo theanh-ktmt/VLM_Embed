@@ -36,7 +36,7 @@ EVAL_SUBSETS_STR="${EVAL_SUBSETS_ARR[*]}" # Join array to string
 KD_WEIGHTS=(0.5 1.0 2.0)
 VAR_THRESHOLDS=(0.85 0.95)
 GAP_WEIGHTS=(0.5 1.0)
-MATRYOSHKA_OPTS=("64" "64 128")
+MATRYOSHKA_OPTS=("64 128")
 
 # =========================================================================
 # Tuning Loop
