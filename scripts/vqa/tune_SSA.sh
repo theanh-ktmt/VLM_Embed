@@ -97,7 +97,7 @@ for kd_w in "${KD_WEIGHTS[@]}"; do
             --per_device_train_batch_size $BATCH_SIZE \
             --per_device_eval_batch_size 128 \
             --gradient_accumulation_steps 1 \
-            --learning_rate 1e-5 \
+            --learning_rate 1e-4 \
             --num_train_epochs 1 \
             --bf16 \
             --save_total_limit 1 \

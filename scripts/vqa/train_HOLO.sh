@@ -39,7 +39,7 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --output_dir "training/$EXP_NAME" \
     --per_device_train_batch_size $BATCH_SIZE \
     --gradient_accumulation_steps 1 \
-    --learning_rate 1e-5 \
+    --learning_rate 1e-4 \
     --num_train_epochs 1 \
     --bf16 \
     --save_total_limit 2 \
