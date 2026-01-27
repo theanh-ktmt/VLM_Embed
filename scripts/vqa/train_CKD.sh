@@ -66,6 +66,6 @@ torchrun --nproc_per_node=$NUM_GPUS_PER_NODE $TRAIN_SCRIPT \
     --ckd_temperature 0.07 \
     --image_resolution "low" \
     --projector_config_path "./config/projector_config.json" \
-    --projector_lr 5e-5 \
+    --projector_lr 5e-4 \
     --report_to "wandb" \
     --run_name "$EXP_NAME"

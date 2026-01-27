@@ -110,7 +110,7 @@ for kd_w in "${KD_WEIGHTS[@]}"; do
             --lr_scheduler_type "cosine" \
             --warmup_ratio 0.03 \
             --projector_config_path "./config/projector_config.json" \
-            --projector_lr 5e-5 \
+            --projector_lr 5e-4 \
             --image_resolution "low" \
             --report_to "wandb" \
             --run_name "$CURRENT_EXP_NAME" \
