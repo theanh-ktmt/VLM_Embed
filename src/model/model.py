@@ -11,8 +11,8 @@ from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, 
 
 from src.arguments import ModelArguments
 from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, \
-    QWEN2_VL_TOKENSELECTION, backbone2model, GME, VLM_IMAGE_TOKENS, LamRA, COLPALI, INTERN_VL3, LLAVA_ONEVISION
-from src.model.vlm_backbone.colpali import ColPali
+    QWEN2_VL_TOKENSELECTION, backbone2model, GME, VLM_IMAGE_TOKENS, LamRA, COLPALI, INTERN_VL3, LLAVA_ONEVISION, QWEN3_VL
+from src.model.vlm_backbone.qwen3_vl.modeling_qwen3_vl import Qwen3_VLForConditionalGeneration as Qwen3VLForEmbedding
 from src.model.vlm_backbone.gme.gme_inference import GmeQwen2VL
 from src.model.vlm_backbone.lamra.lamra_inference import LamRAQwen2VL
 from src.model.vlm_backbone.phi3_v.modeling_phi3_v import Phi3VForCausalLM
@@ -129,7 +129,7 @@ class MMEBModel(nn.Module):
             pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
             print("len image features:", None if image_features is None else image_features.shape)
             return pooled_output, image_features, attention_matrix, output_hidden_states
-        elif getattr(self, "model_backbone", None) in [LLAVA_QWEN2, QWEN2_VL]:
+        elif getattr(self, "model_backbone", None) in [LLAVA_QWEN2, QWEN2_VL, QWEN3_VL]:
             # print("Encoding input for FastVLM model backbone")
             hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True, output_attentions=True)
             if hasattr(hidden_states, 'batch_image_embeds'):
@@ -241,6 +241,16 @@ class MMEBModel(nn.Module):
                 config=config,
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
+            )
+        elif model_backbone == QWEN3_VL:
+            config.use_cache = False
+            # Use the custom wrapper class defined above
+            base_model = Qwen3VLForEmbedding.from_pretrained(
+                model_args.model_name,
+                config=config,
+                torch_dtype=torch.bfloat16,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True
             )
         elif model_backbone in [INTERN_VL3]:
             config._attn_implementation = "eager"
@@ -405,7 +415,7 @@ class MMEBModel(nn.Module):
             model_backbone = get_backbone_name(hf_config=config, model_type=model_args.model_type)
             setattr(model_args, 'model_backbone', model_backbone)
         print_master(f'Loading backbone [{model_args.model_backbone}] from {model_args.model_name}')
-        if model_args.model_backbone in {LLAVA_ONEVISION, LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION}:
+        if model_args.model_backbone in {LLAVA_ONEVISION, LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, QWEN3_VL}:
             config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)
             config._attn_implementation = "eager"
             config.vision_config._attn_implementation = "eager"

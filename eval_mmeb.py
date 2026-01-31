@@ -26,6 +26,8 @@ from src.data.dataset.mmeb_dataset import EvalDataset
 from src.model.model import MMEBModel
 from src.model.processor import COLPALI, get_backbone_name, load_processor
 from src.utils import print_rank
+from src.model.vlm_backbone.qwen3_vl.configuration_qwen3_vl import Qwen3_VLConfig
+AutoConfig.register("qwen3_vl", Qwen3_VLConfig)
 
 # Module-level logger for use before accelerator initialization
 module_logger = logging.getLogger(__name__)

@@ -20,6 +20,7 @@ from src.model.vlm_backbone.intern_vl3 import load_image
 from src.model.vlm_backbone.intern_vl3 import get_conv_template
 from src.model.vlm_backbone.qwen2_5_vl_tokenselection import \
     Qwen2_5_VLForConditionalGeneration as Qwen2_5_VL_TokenSelectionForConditionalGeneration
+from src.model.vlm_backbone.qwen3_vl.modeling_qwen3_vl import Qwen3_VLForConditionalGeneration
 from src.model.vlm_backbone.qwen2_vl_tokenselection import \
     Qwen2VLForConditionalGeneration as Qwen2VLTokenSelectionForConditionalGeneration, \
     Qwen2VLProcessor as Qwen2VLTokenSelectionProcessor
@@ -44,6 +45,7 @@ QWEN2_VL_TOKENSELECTION = 'qwen2_vl'
 QWEN2_5_VL = 'qwen2_5_vl'
 QWEN2_VL_TOKENSELECTION = 'qwen2_vl_tokenselection'
 QWEN2_5_VL_TOKENSELECTION = 'qwen2_5_vl_tokenselection'
+QWEN3_VL = 'qwen3_vl'
 INTERN_VL3 = 'internvl_chat'
 INTERNVIDEO2 = 'internvideo2'
 GME = 'gme'  # QWEN2-VL
@@ -64,7 +66,8 @@ MODEL2BACKBONE = {  # keys are from hf_config.model_type or manually added if no
     'gme': GME, 
     'lamra': LamRA,
     'colpali': COLPALI,
-    'llava_qwen2': LLAVA_QWEN2
+    'llava_qwen2': LLAVA_QWEN2,
+    'qwen3_vl': QWEN3_VL,
 }
 SUPPORTED_MODELS = set(MODEL2BACKBONE.keys())
 
@@ -77,6 +80,7 @@ VLM_IMAGE_TOKENS = {
     QWEN2_5_VL: "<|image_pad|>",
     QWEN2_VL_TOKENSELECTION: "<|image_pad|>",
     QWEN2_5_VL_TOKENSELECTION: "<|image_pad|>",
+    QWEN3_VL: "<|image_pad|>",
     GME: "<|image_pad|>",
     LamRA: "<|image_pad|>",
     INTERNVIDEO2: "",
@@ -92,6 +96,7 @@ VLM_VIDEO_TOKENS = {
     QWEN2_5_VL: "<|video_pad|>",
     QWEN2_VL_TOKENSELECTION: "<|video_pad|>",
     QWEN2_5_VL_TOKENSELECTION: "<|video_pad|>",
+    QWEN3_VL: "<|video_pad|>",
     GME: "<|video_pad|>",
     LamRA: "<|video_pad|>",
     INTERNVIDEO2: "",
@@ -107,6 +112,7 @@ backbone2model = {
     QWEN2_5_VL: Qwen2_5_VLForConditionalGeneration,
     QWEN2_VL_TOKENSELECTION: Qwen2VLTokenSelectionForConditionalGeneration,
     QWEN2_5_VL_TOKENSELECTION: Qwen2_5_VL_TokenSelectionForConditionalGeneration,
+    QWEN3_VL: Qwen3_VLForConditionalGeneration,
     INTERNVIDEO2: InternVideo2_Stage2,
     LLAVA_QWEN2: LlavaQwen2ForCausalLM
 }
@@ -195,6 +201,10 @@ def load_processor(model_args, data_args=None):
         # tokenizer = Qwen2TokenizerFast.from_pretrained(model_name_or_path)
         # processor = Qwen2_5_VLProcessor.from_pretrained(model_name_or_path, image_processor=image_processor, tokenizer=tokenizer)
         # processor = Qwen2_5_VLProcessor.from_pretrained(model_name_or_path, image_processor=autoprocessor.image_processor, tokenizer=autoprocessor.tokenizer)
+        processor = AutoProcessor.from_pretrained(model_name_or_path, padding_side='left', max_pixels=data_args.resize_max_pixels, min_pixels = data_args.resize_min_pixels)
+    elif model_args.model_backbone == QWEN3_VL:
+        from transformers import AutoProcessor
+        print(f">>>>>>>>>>>>>>>>>>>>>>>> Processor Qwen3 {model_name_or_path}")
         processor = AutoProcessor.from_pretrained(model_name_or_path, padding_side='left', max_pixels=data_args.resize_max_pixels, min_pixels = data_args.resize_min_pixels)
     elif model_args.model_backbone == INTERN_VL3:
         from transformers import AutoModel, AutoTokenizer
@@ -795,6 +805,7 @@ process_vlm_inputs_fns = {
     INTERN_VL3: Intern_VL3_process_fn,
     QWEN2_VL: Qwen2_VL_process_fn,
     QWEN2_5_VL: Qwen2_VL_process_fn,
+    QWEN3_VL: Qwen2_VL_process_fn,
     QWEN2_VL_TOKENSELECTION: Qwen2_VL_TokenSelection_process_fn,
     QWEN2_5_VL_TOKENSELECTION: Qwen2_VL_TokenSelection_process_fn,
     INTERNVIDEO2: InternVideo2_process_fn,
