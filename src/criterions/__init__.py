@@ -11,6 +11,7 @@ from .holo import HoloDistillLoss
 from .mse import MSEKD
 from .ssa import SSALoss
 from .contrastive import ContrastiveLoss
+from .pga import PGAKDLoss
 
 criterion_list = {
     "contrastive_rkd": ContrastiveLossWithRKD,
@@ -24,6 +25,7 @@ criterion_list = {
     "ckd": CKDLoss,
     "holo": HoloDistillLoss,
     "ssa": SSALoss,
+    "pga": PGAKDLoss,
     "contrastive": ContrastiveLoss,
 }
 
