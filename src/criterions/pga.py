@@ -91,7 +91,7 @@ class PGAKDLoss(nn.Module):
         self.mse_weight = getattr(args, 'mse_loss_weight', 0.3)
         
         # --- PGA Hyperparameters ---
-        self.variance_threshold = getattr(args, 'spectral_variance_threshold', 0.95)
+        self.variance_threshold = getattr(args, 'pga_spectral_variance_threshold', 0.95)
 
         # --- Components ---
         self.mse_loss_fn = nn.MSELoss(reduction='mean')
