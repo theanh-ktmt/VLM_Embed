@@ -564,6 +564,23 @@ class TrainingArguments(DistillationArguments, RKDArguments, CKDArguments, Propo
         metadata={"help": "Weight for cross modal loss"}
     )
 
+    pga_spectral_variance_threshold: float = field(
+        default=0.95,
+        metadata={"help": "Threshold for variance in PGA distillation loss"}
+    )
+    pga_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for the PGA distillation loss"}
+    )
+    pga_scl_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for the SCL loss in PGA distillation loss"}
+    )
+    pga_mse_loss_weight: float = field(
+        default=1.0,
+        metadata={"help": "Weight for the MSE loss in PGA distillation loss"}
+    )   
+
 
 @dataclass
 class MTEBArguments:

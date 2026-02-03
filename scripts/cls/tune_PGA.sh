@@ -103,10 +103,10 @@ for mse_w in "${PGA_MSE_LOSS_WEIGHTS[@]}"; do
             --report_to "wandb" \
             --run_name "$CURRENT_EXP_NAME" \
             --kd_loss_type "pga" \
-            --mse_loss_weight "$mse_w" \
+            --pga_mse_loss_weight "$mse_w" \
             --pga_loss_weight "$pga_w" \
-            --scl_loss_weight "$scl_w" \
-            --spectral_variance_threshold "$var_t"
+            --pga_scl_loss_weight "$scl_w" \
+            --pga_spectral_variance_threshold "$var_t"
 
         # 4. Run Evaluation (On checkpoint-final)
         # Find the latest checkpoint directory (handling cases where explicit 'checkpoint-final' might not exist)
