@@ -46,12 +46,12 @@ def Qwen2_VL_process_fn(model_inputs: dict, processor: Qwen2VLProcessor, max_len
                 
                 # --- FIX: BỎ input_data_format=ChannelDimension.LAST ---
                 # Processor tự động xử lý PIL Image rất tốt, không cần ép format thủ công
-                inputs = processor(text=[text], images=images, return_tensors="pt", max_length=None, truncation=False)
+                inputs = processor(text=[text], images=images, return_tensors="pt", max_length=None, truncation=False, input_data_format=ChannelDimension.LAST)
             
             # Case 3: Video Input
             elif vlm_video_token in text:
                 # Tương tự cho video
-                inputs = processor(text=[text], videos=[images], return_tensors="pt", max_length=None, truncation=False)
+                inputs = processor(text=[text], videos=[images], return_tensors="pt", max_length=None, truncation=False, input_data_format=ChannelDimension.LAST)
             else:
                 raise NotImplementedError
             
@@ -87,6 +87,7 @@ def Qwen2_VL_process_fn(model_inputs: dict, processor: Qwen2VLProcessor, max_len
 # --- 3. TEST CASE ---
 if __name__ == "__main__":
     print("--- Đang tải Processor ---")
+    import ipdb; ipdb.set_trace()
     try:
         processor = Qwen2VLProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
     except:
@@ -101,7 +102,7 @@ if __name__ == "__main__":
         'text': [
             "Text only sample.",
             f"Image normal: {VLM_IMAGE_TOKENS[QWEN2_VL]} desc.",
-            f"Image tiny: {VLM_IMAGE_TOKENS[QWEN2_VL]} desc.",
+            f"Image tiny: {VLM_IMAGE_TOKENS[QWEN2_VL]} desc." * 30,
         ],
         'images': [
             None,

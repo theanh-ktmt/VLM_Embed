@@ -123,7 +123,7 @@ class MMEBModel(nn.Module):
                 image_features = hidden_states.batch_image_embeds
             else: 
                 image_features = None
-            output_hidden_states = hidden_states.hidden_states
+            output_hidden_states = hidden_states
             last_hidden_state = hidden_states.hidden_states[-1]
             attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
             pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
@@ -136,7 +136,7 @@ class MMEBModel(nn.Module):
                 image_features = hidden_states.batch_image_embeds
             else: 
                 image_features = None
-            output_hidden_states = hidden_states.hidden_states
+            output_hidden_states = hidden_states
             last_hidden_state = hidden_states.hidden_states[-1]
             attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
             pooled_output = self._pooling(last_hidden_state, input['attention_mask'])
@@ -149,7 +149,7 @@ class MMEBModel(nn.Module):
                 image_features = hidden_states.batch_image_embeds
             else: 
                 image_features = None
-            output_hidden_states = hidden_states.hidden_states
+            output_hidden_states = hidden_states
             last_hidden_state = hidden_states.hidden_states[-1]
             attention_matrix = hidden_states.attentions if hasattr(hidden_states, 'attentions') else None
             pooled_output = self._pooling(last_hidden_state, input['attention_mask'])

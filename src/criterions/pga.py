@@ -15,6 +15,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 from transformers import PreTrainedModel, ProcessorMixin
 from ..arguments import SSAAguments
+from src.model.llava.constants import IMAGE_TOKEN_INDEX
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,11 @@ class SCLProjectors(nn.Module):
         3. t_img_cross: Teacher Image projected for Text alignment (Cross)
         4. t_txt_cross: Teacher Text projected for Image alignment (Cross)
         """
+        if t_img.dtype != self.img_proj.weight.dtype:
+            self.img_proj.to(t_img.dtype)
+            self.txt_proj.to(t_txt.dtype)
+            self.cross_img_proj.to(t_img.dtype)
+            self.cross_txt_proj.to(t_txt.dtype)
         t_img_intra = self.img_proj(t_img)
         t_txt_intra = self.txt_proj(t_txt)
         
@@ -75,7 +81,7 @@ class PGAKDLoss(nn.Module):
     Total Loss = L_Base + lambda_PGA * L_PGA + lambda_SCL * L_SCL
     """
 
-    def __init__(self, args: Type[SSAAguments], teacher_dim: int = 4096, student_dim: int = 1024):
+    def __init__(self, args: Type[SSAAguments]):
         """
         Args:
             args: Configuration arguments.
@@ -84,6 +90,10 @@ class PGAKDLoss(nn.Module):
         """
         super(PGAKDLoss, self).__init__()
         self.args = args
+        self.teacher_dim = None
+        self.student_dim = None
+        self.teacher_processor = None
+        self.student_processor = None
         
         # --- Weights ---
         self.pga_weight = getattr(args, 'pga_loss_weight', getattr(args, 'kd_weight', 1.0))
@@ -97,7 +107,8 @@ class PGAKDLoss(nn.Module):
         self.mse_loss_fn = nn.MSELoss(reduction='mean')
         
         # SCL Projectors
-        self.scl_projectors = SCLProjectors(teacher_dim, student_dim)
+        self.scl_projectors = None
+        self.initialized_scl_projectors = False
 
         # --- Distributed Setup ---
         if dist.is_initialized():
@@ -125,6 +136,13 @@ class PGAKDLoss(nn.Module):
         """
         student_model: PreTrainedModel = distiller.student
         teacher_model: PreTrainedModel = distiller.teacher
+
+        if not self.initialized_scl_projectors:
+            self.teacher_dim = distiller.teacher_hidden_dim
+            self.student_dim = distiller.student_hidden_dim
+            self.teacher_processor = distiller.get_teacher_processor()
+            self.student_processor = distiller.get_student_processor()
+
 
         # --- 1. Forward Pass & Feature Extraction ---
         with torch.no_grad():
@@ -164,7 +182,8 @@ class PGAKDLoss(nn.Module):
             s_qry_hiddens, t_qry_hiddens, 
             input_data['student_inputs']['qry']['input_ids'],
             input_data['teacher_inputs']['qry']['input_ids'],
-            student_model.processor if hasattr(student_model, 'processor') else None,
+            self.student_processor,
+            self.teacher_processor,
             distiller.temperature
         )
 
@@ -254,18 +273,24 @@ class PGAKDLoss(nn.Module):
     def _compute_scl_loss(self, 
                           s_hidden: Any, t_hidden: Any, 
                           s_ids: torch.Tensor, t_ids: torch.Tensor,
-                          processor: Optional[ProcessorMixin],
+                          processor_student: Optional[ProcessorMixin],
+                          processor_teacher: Optional[ProcessorMixin],
                           temperature: float) -> torch.Tensor:
         """
         Computes Semantic Consistency Learning loss via MI maximization on 4 pathways.
         Uses specialized projectors for cross-modal alignment.
         """
-        if processor is None:
+        if processor_student is None or processor_teacher is None:
+            logger.warning("SCL loss requires processors for both student and teacher models.")
             return torch.tensor(0.0, device=s_ids.device)
 
+        if not self.initialized_scl_projectors:
+            self.scl_projectors = SCLProjectors(self.teacher_dim, self.student_dim).to(s_hidden.hidden_states[-1].device)
+            self.initialized_scl_projectors = True
+
         # 1. Extract modality-specific representations (Raw)
-        s_img, s_txt = self._get_image_text_representation(s_hidden, processor, s_ids)
-        t_img_raw, t_txt_raw = self._get_image_text_representation(t_hidden, processor, t_ids)
+        s_img, s_txt = self._get_image_text_representation(s_hidden, processor_student, s_ids)
+        t_img_raw, t_txt_raw = self._get_image_text_representation(t_hidden, processor_teacher, t_ids)
 
         # 2. Project Teacher features to Student space using specific projectors
         # Returns: (Intra-Img, Intra-Txt, Cross-Img, Cross-Txt)
@@ -303,43 +328,117 @@ class PGAKDLoss(nn.Module):
         
         return nn.CrossEntropyLoss()(logits, labels)
 
-    def _get_image_text_representation(self, output_hidden_states: torch.Tensor, processor: ProcessorMixin, input_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _get_image_text_representation(self, output_hidden_states: Any, processor: ProcessorMixin, input_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Extracts the image and text representations from the hidden states.
+        Extracts image and text representations robustly handling token expansion.
         """
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
+        # 1. Chuẩn hóa input_ids thành Tensor
+        last_hidden_state = output_hidden_states.hidden_states[-1] # (Batch, Seq_Out, Dim)
+        device = last_hidden_state.device
+        
+        if not isinstance(input_ids, torch.Tensor):
+            input_ids = torch.tensor(input_ids, device=device)
 
-        image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
-        pad_token_id = processor.tokenizer.pad_token_id
-        # Create mask for image and text tokens
-        image_mask = (input_ids == image_token_id).float()
-        text_mask = (input_ids != image_token_id).float()
-        text_mask = (input_ids != image_token_id and input_ids != pad_token_id).float()
+        # 2. Xác định Image Token ID
+        # Cố gắng lấy từ processor, nếu không thì fallback về hằng số LLaVA/FastVLM thường dùng
+        img_token_id = None
+        if hasattr(processor, 'image_token_id'):
+            img_token_id = processor.image_token_id
+        elif hasattr(processor, 'tokenizer'):
+             token_str = getattr(processor, 'image_token', '<image>')
+             img_token_id = processor.tokenizer.convert_tokens_to_ids(token_str)
+        
+        if img_token_id is None:
+             # Fallback cho trường hợp không tìm thấy ID (thường là -200)
+             try:
+                 img_token_id = IMAGE_TOKEN_INDEX
+             except ImportError:
+                 # Nếu vẫn không được, dùng EOS fallback để tránh crash
+                 logger.warning("Could not determine image_token_id. Using EOS rep fallback.")
+                 eos = last_hidden_state[:, -1, :]
+                 return eos, eos
 
+        # 3. Tính toán số lượng token ảnh (num_image_tokens)
+        batch_size, seq_len_in = input_ids.shape
+        _, seq_len_out, _ = last_hidden_state.shape
+        
+        # Công thức: Chênh lệch độ dài + 1 (vì 1 token placeholder đã bị thay thế)
+        # Giả định mỗi sample chỉ có tối đa 1 ảnh (VLM2Vec setting)
+        expansion_diff = seq_len_out - seq_len_in
+        num_img_tokens = expansion_diff + 1 if expansion_diff >= 0 else 0
 
-        # Get attention scores of last token in last layer
-        last_attention = output_hidden_states.attentions[-1] # (batch_size, num_heads, seq_len, seq_len)
-        last_token_attention = last_attention[:, :, -1, :] # (batch_size, num_heads, seq_len)
-        attention_weights = last_token_attention.mean(dim=1) # mean over heads, shape: (batch_size, seq_len)
+        # Nếu không có sự thay đổi độ dài (Text-only batch), num_img_tokens = 1 (là chính cái placeholder nếu có)
+        # Nhưng để an toàn cho logic bên dưới, ta coi placeholder đó là image token duy nhất.
+        if expansion_diff == 0:
+            num_img_tokens = 1
 
-        # Get last hidden state
-        last_hidden_state = output_hidden_states.hidden_states[-1] # (batch, seq_len, hidden_dim)
+        # 4. Tạo Mask MỚI khớp với kích thước đã bung (seq_len_out)
+        # Chúng ta không thể dùng mask cũ (seq_len_in) áp vào attention (seq_len_out)
+        
+        expanded_image_mask = torch.zeros((batch_size, seq_len_out), dtype=torch.bool, device=device)
+        expanded_text_mask = torch.zeros((batch_size, seq_len_out), dtype=torch.bool, device=device)
+        
+        pad_token_id = getattr(processor.tokenizer, 'pad_token_id', -100)
+
+        # Duyệt qua từng sample trong batch để map vị trí chính xác
+        # (Vì vị trí ảnh <image> có thể khác nhau ở mỗi sample do padding hoặc prompt)
+        for i in range(batch_size):
+            # Tìm vị trí của token <image> trong input gốc
+            img_indices = (input_ids[i] == img_token_id).nonzero(as_tuple=True)[0]
+            
+            if len(img_indices) == 0:
+                # Case: Không có ảnh (Text only) -> Map 1-1
+                # Text là tất cả những gì không phải padding
+                is_pad = (input_ids[i] == pad_token_id)
+                expanded_text_mask[i, :seq_len_in] = ~is_pad
+            else:
+                # Case: Có ảnh -> Thực hiện "chèn" mask
+                # Giả sử chỉ lấy ảnh đầu tiên tìm thấy (VLM2Vec thường chỉ 1 ảnh)
+                start_idx = img_indices[0].item()
+                
+                # --- A. Tạo Image Mask ---
+                # Tại vị trí start_idx, model đã chèn vào `num_img_tokens`
+                img_end_idx = start_idx + num_img_tokens
+                expanded_image_mask[i, start_idx : img_end_idx] = True
+                
+                # --- B. Tạo Text Mask ---
+                # Phần Text TRƯỚC ảnh: Giữ nguyên vị trí (0 -> start_idx)
+                text_pre_mask = (input_ids[i, :start_idx] != pad_token_id)
+                expanded_text_mask[i, :start_idx] = text_pre_mask
+                
+                # Phần Text SAU ảnh: Dịch chuyển index đi một đoạn `expansion_diff`
+                # Input: [start_idx+1 : seq_len_in]
+                # Output: [img_end_idx : seq_len_out]
+                text_post_mask = (input_ids[i, start_idx+1:] != pad_token_id)
+                if len(text_post_mask) > 0:
+                    expanded_text_mask[i, img_end_idx:] = text_post_mask
+
+        # 5. Attention Weighted Pooling (Dùng mask mới tạo)
+        # Lấy attention weights của token [EOS] (thường là token cuối cùng)
+        last_attention = output_hidden_states.attentions[-1] 
+        last_token_attention = last_attention[:, :, -1, :] 
+        avg_attn = last_token_attention.mean(dim=1) # (Batch, Seq_Out)
 
         def get_weighted_rep(mask):
-            masked_attn = attention_weights.masked_fill(~mask, float('-inf'))
-            normalized_weights = torch.softmax(masked_attn, dim=-1) # (batch, seq_len)
+            # Kiểm tra xem sample có token loại này không (tránh NaN)
+            has_tokens = mask.sum(dim=1) > 0
             
-            weighted_rep = torch.bmm(normalized_weights.unsqueeze(1), last_hidden_state)
-            return weighted_rep.squeeze(1) # (batch, hidden_dim)
+            # Mask fill với -inf để Softmax bỏ qua các vị trí không mong muốn
+            masked_attn = avg_attn.masked_fill(~mask, torch.finfo(avg_attn.dtype).min)
+            normalized_weights = torch.softmax(masked_attn, dim=-1).unsqueeze(1) # (Batch, 1, Seq_Out)
+            
+            # Weighted Sum: (Batch, 1, Seq_Out) x (Batch, Seq_Out, Dim) -> (Batch, 1, Dim)
+            weighted_rep = torch.bmm(normalized_weights, last_hidden_state).squeeze(1)
+            
+            # Fallback: Nếu không có token (ví dụ text-only batch thì img rep = EOS), dùng EOS
+            eos_rep = last_hidden_state[:, -1, :]
+            return torch.where(has_tokens.unsqueeze(-1), weighted_rep, eos_rep)
 
-        image_representation = get_weighted_rep(image_mask)
-        text_representation = get_weighted_rep(text_mask)
-
-        if image_mask.sum() == 0:
-            # Use text representation as image representation
-            image_representation = text_representation
+        image_representation = get_weighted_rep(expanded_image_mask)
+        text_representation = get_weighted_rep(expanded_text_mask)
+        
+        # Log để debug (chỉ chạy 1 lần đầu hoặc khi cần)
+        # logger.info(f"Expanded Check | In: {seq_len_in}, Out: {seq_len_out}, Img Tokens: {num_img_tokens}")
 
         return image_representation, text_representation
-        
-        
-        
