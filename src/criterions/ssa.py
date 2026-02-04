@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 from transformers import PreTrainedModel
-
+from transformers import ProcessorMixin
 from ..arguments import SSAAguments
 
 logger = logging.getLogger(__name__)
@@ -84,11 +84,11 @@ class SSALoss(nn.Module):
         # --- 1. Encode Inputs ---
         with torch.no_grad():
             teacher_model.eval()
-            t_qry, _, _, _ = teacher_model.encode_input(input_data['teacher_inputs']['qry'])
-            t_pos, _, _, _ = teacher_model.encode_input(input_data['teacher_inputs']['pos'])
+            t_qry, _, _, t_qry_output_hidden_states = teacher_model.encode_input(input_data['teacher_inputs']['qry'])
+            t_pos, _, _, t_pos_output_hidden_states = teacher_model.encode_input(input_data['teacher_inputs']['pos'])
 
-        s_qry, _, _, _ = student_model.encode_input(input_data['student_inputs']['qry'])
-        s_pos, _, _, _ = student_model.encode_input(input_data['student_inputs']['pos'])
+        s_qry, _, _, s_qry_output_hidden_states = student_model.encode_input(input_data['student_inputs']['qry'])
+        s_pos, _, _, s_pos_output_hidden_states = student_model.encode_input(input_data['student_inputs']['pos'])
 
         # --- 2. Compute Distributed Contrastive Loss (InfoNCE) ---
         # Gather embeddings from all GPUs to maximize batch size for negative samples
@@ -236,3 +236,44 @@ class SSALoss(nn.Module):
         dist_t_norm = dist_t / (dist_t.mean() + 1e-8)
 
         return F.mse_loss(dist_s_norm, dist_t_norm)
+
+    def _get_image_text_representation(self, output_hidden_states: torch.Tensor, processor: ProcessorMixin, input_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Extracts the image and text representations from the hidden states.
+        """
+        import pdb; pdb.set_trace()
+
+        image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
+        pad_token_id = processor.tokenizer.pad_token_id
+        # Create mask for image and text tokens
+        image_mask = (input_ids == image_token_id).float()
+        text_mask = (input_ids != image_token_id).float()
+        text_mask = (input_ids != image_token_id and input_ids != pad_token_id).float()
+
+
+        # Get attention scores of last token in last layer
+        last_attention = output_hidden_states.attentions[-1] # (batch_size, num_heads, seq_len, seq_len)
+        last_token_attention = last_attention[:, :, -1, :] # (batch_size, num_heads, seq_len)
+        attention_weights = last_token_attention.mean(dim=1) # mean over heads, shape: (batch_size, seq_len)
+
+        # Get last hidden state
+        last_hidden_state = output_hidden_states.hidden_states[-1] # (batch, seq_len, hidden_dim)
+
+        def get_weighted_rep(mask):
+            masked_attn = attention_weights.masked_fill(~mask, float('-inf'))
+            normalized_weights = torch.softmax(masked_attn, dim=-1) # (batch, seq_len)
+            
+            weighted_rep = torch.bmm(normalized_weights.unsqueeze(1), last_hidden_state)
+            return weighted_rep.squeeze(1) # (batch, hidden_dim)
+
+        image_representation = get_weighted_rep(image_mask)
+        text_representation = get_weighted_rep(text_mask)
+
+        if image_mask.sum() == 0:
+            # Use text representation as image representation
+            image_representation = text_representation
+
+        return image_representation, text_representation
+        
+        
+        
