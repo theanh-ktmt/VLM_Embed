@@ -5,7 +5,7 @@
 # =========================================================================
 
 # --- Configuration ---
-NUM_GPUS_PER_NODE=8
+NUM_GPUS_PER_NODE=1
 TRAIN_SCRIPT="main.py"
 EVAL_SCRIPT="eval_mmeb.py"
 BASE_EXP_NAME="PGA_Tune_Full_CLS"
@@ -17,23 +17,22 @@ LORA_R=64
 BATCH_SIZE=32
 
 if [ "$USE_FULLSET" = true ]; then
-    SUBSETS=("ImageNet_1K" "N24News" "HatefulMemes" "VOC2007" "SUN397")
+    SUBSETS=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
     echo "Running with FULL dataset set."
 else
-    SUBSETS=("ImageNet_1K")
-    echo "Running with SINGLE dataset (ImageNet_1K) for tuning efficiency."
+    SUBSETS=("DocVQA")
+    echo "Running with SINGLE dataset (DocVQA) for tuning efficiency."
 fi
-
 # Evaluation Subsets (Datasets to appear in WandB Table)
-EVAL_SUBSETS_ARR=("ImageNet-1K" "N24News" "HatefulMemes" "VOC2007" "SUN397")
+EVAL_SUBSETS_ARR=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
 
 # =========================================================================
 # Hyperparameter Grid
 # =========================================================================
 
 PGA_MSE_LOSS_WEIGHTS=(0.3)
-PGA_SCL_LOSS_WEIGHTS=(0.125 0.1)
-PGA_LOSS_WEIGHTS=(0.5 1.0 2.0)
+PGA_SCL_LOSS_WEIGHTS=(0.5 0.1)
+PGA_LOSS_WEIGHTS=(0.5 1.0)
 PGA_SPECTRAL_VARIANCE_THRESHOLDS=(0.85 0.8)
 
 # =========================================================================
