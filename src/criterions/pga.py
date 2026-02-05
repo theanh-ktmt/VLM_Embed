@@ -99,6 +99,7 @@ class PGAKDLoss(nn.Module):
         self.pga_weight = getattr(args, 'pga_loss_weight', getattr(args, 'kd_weight', 1.0))
         self.scl_weight = getattr(args, 'scl_loss_weight', 1.0)
         self.mse_weight = getattr(args, 'mse_loss_weight', 0.3)
+        self.projector_lr = getattr(args, 'projector_lr', 5e-4)
         
         # --- PGA Hyperparameters ---
         self.variance_threshold = getattr(args, 'pga_spectral_variance_threshold', 0.95)
@@ -442,3 +443,11 @@ class PGAKDLoss(nn.Module):
         # logger.info(f"Expanded Check | In: {seq_len_in}, Out: {seq_len_out}, Img Tokens: {num_img_tokens}")
 
         return image_representation, text_representation
+    def _add_optimizer_param_group(self, optimizer: torch.optim.Optimizer) -> torch.optim.Optimizer:
+        lr = self.projector_lr
+        optimizer.add_param_group({
+            "params": self.scl_projectors.parameters(),
+            "lr": lr
+        })
+        logger.info(f"SCL Projector parameters added to optimizer with lr: {lr}")
+        return optimizer

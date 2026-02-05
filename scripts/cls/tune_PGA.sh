@@ -5,16 +5,16 @@
 # =========================================================================
 
 # --- Configuration ---
-NUM_GPUS_PER_NODE=8
+NUM_GPUS_PER_NODE=4
 TRAIN_SCRIPT="main.py"
 EVAL_SCRIPT="eval_mmeb.py"
-BASE_EXP_NAME="PGA_Tune_Full_CLS"
+BASE_EXP_NAME="PGA_Tune_Full_CLS_lr1e-4_bs16_lora64_alpha128"
 WANDB_PROJECT="vlm_distillation" 
 
 # 1. Dataset Configuration
 USE_FULLSET=true
 LORA_R=64
-BATCH_SIZE=32
+BATCH_SIZE=16
 
 if [ "$USE_FULLSET" = true ]; then
     SUBSETS=("ImageNet_1K" "N24News" "HatefulMemes" "VOC2007" "SUN397")
@@ -31,10 +31,10 @@ EVAL_SUBSETS_ARR=("ImageNet-1K" "N24News" "HatefulMemes" "VOC2007" "SUN397")
 # Hyperparameter Grid
 # =========================================================================
 
-PGA_MSE_LOSS_WEIGHTS=(0.3)
-PGA_SCL_LOSS_WEIGHTS=(0.125 0.1)
-PGA_LOSS_WEIGHTS=(0.5 1.0 2.0)
-PGA_SPECTRAL_VARIANCE_THRESHOLDS=(0.85 0.8)
+PGA_MSE_LOSS_WEIGHTS=(0.35)
+PGA_SCL_LOSS_WEIGHTS=(0.01)
+PGA_LOSS_WEIGHTS=(1.0)
+PGA_SPECTRAL_VARIANCE_THRESHOLDS=(0.85 0.95)
 
 # =========================================================================
 # Tuning Loop
@@ -67,6 +67,7 @@ for mse_w in "${PGA_MSE_LOSS_WEIGHTS[@]}"; do
             --model_name "apple/FastVLM-0.5B" \
             --teacher_model_name "raghavlite/B3_Qwen2_2B" \
             --lora True \
+            --lora_alpha 128 \
             --teacher_lora True \
             --lora_r $LORA_R \
             --teacher_lora_r 8 \
