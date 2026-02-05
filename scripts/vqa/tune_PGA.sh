@@ -5,16 +5,16 @@
 # =========================================================================
 
 # --- Configuration ---
-NUM_GPUS_PER_NODE=1
+NUM_GPUS_PER_NODE=6
 TRAIN_SCRIPT="main.py"
 EVAL_SCRIPT="eval_mmeb.py"
-BASE_EXP_NAME="PGA_Tune_Full_CLS"
+BASE_EXP_NAME="PGA_Tune_Full_VQAlr1e-4_bs8_lora64_alpha128"
 WANDB_PROJECT="vlm_distillation" 
 
 # 1. Dataset Configuration
 USE_FULLSET=true
 LORA_R=64
-BATCH_SIZE=32
+BATCH_SIZE=8
 
 if [ "$USE_FULLSET" = true ]; then
     SUBSETS=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
@@ -23,6 +23,7 @@ else
     SUBSETS=("DocVQA")
     echo "Running with SINGLE dataset (DocVQA) for tuning efficiency."
 fi
+
 # Evaluation Subsets (Datasets to appear in WandB Table)
 EVAL_SUBSETS_ARR=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visual7W")
 
@@ -31,9 +32,9 @@ EVAL_SUBSETS_ARR=("OK-VQA" "A-OKVQA" "DocVQA" "InfographicsVQA" "ChartQA" "Visua
 # =========================================================================
 
 PGA_MSE_LOSS_WEIGHTS=(0.3)
-PGA_SCL_LOSS_WEIGHTS=(0.5 0.1)
-PGA_LOSS_WEIGHTS=(0.5 1.0)
-PGA_SPECTRAL_VARIANCE_THRESHOLDS=(0.85 0.8)
+PGA_SCL_LOSS_WEIGHTS=(0.01)
+PGA_LOSS_WEIGHTS=(1.0)
+PGA_SPECTRAL_VARIANCE_THRESHOLDS=(0.85 0.95)
 
 # =========================================================================
 # Tuning Loop
@@ -66,6 +67,7 @@ for mse_w in "${PGA_MSE_LOSS_WEIGHTS[@]}"; do
             --model_name "apple/FastVLM-0.5B" \
             --teacher_model_name "raghavlite/B3_Qwen2_2B" \
             --lora True \
+            --lora_alpha 128 \
             --teacher_lora True \
             --lora_r $LORA_R \
             --teacher_lora_r 8 \
