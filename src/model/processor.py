@@ -318,12 +318,19 @@ def Llava_NEXT_process_fn(model_inputs: dict, processor, max_length=None):
 
     return inputs
 
+import torch
+from PIL import Image
+
 def Llava_ONEVISION_process_fn(model_inputs: dict, processor, max_length=None):
     input_ids, pixel_values, image_sizes = [], [], []
     texts = model_inputs["text"]
     images = model_inputs["images"]
     image_token = processor.image_token
     
+    # [QUAN TRỌNG] Cố định size chuẩn để tránh lỗi Shape Mismatch (256 vs 729)
+    # 384x384 là size gốc của SigLIP encoder -> 729 token (mức tối thiểu an toàn)
+    TARGET_SIZE = (384, 384) 
+
     # 1. Iterate each pair and process
     for text, image in zip(texts, images):
         # --- CASE 1: NO IMAGE (Text Only) ---
@@ -344,33 +351,53 @@ def Llava_ONEVISION_process_fn(model_inputs: dict, processor, max_length=None):
             
         # --- CASE 2: HAS IMAGE ---
         else:
-            if not isinstance(image, list): image = [image]
+            if not isinstance(image, list): 
+                image = [image]
 
-            # Fix image token count in text (Keep logic as is)
+            # --- BƯỚC FIX QUAN TRỌNG: RESIZE ẢNH ---
+            optimized_images = []
+            for img in image:
+                # Resize về 384x384 để ép model dùng 1 patch duy nhất
+                # Dùng LANCZOS để giữ chất lượng tốt nhất khi resize
+                resized_img = img.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
+                optimized_images.append(resized_img)
+            # ---------------------------------------
+
+            # Fix image token count in text
             num_image_token = text.count(image_token)
-            if num_image_token > len(image):
-                text = text.replace(image_token, "", num_image_token - len(image))
-            elif num_image_token < len(image):
-                text = (image_token + '\n' ) * (len(image) - num_image_token) + text
-                
+            if num_image_token > len(optimized_images):
+                text = text.replace(image_token, "", num_image_token - len(optimized_images))
+            elif num_image_token < len(optimized_images):
+                text = (image_token + '\n' ) * (len(optimized_images) - num_image_token) + text
+            
+            # Gọi Processor với tham số size cụ thể
             inputs = processor(
-                images=image, text=text, return_tensors="pt",
-                max_length=max_length, truncation=True, padding=True
+                images=optimized_images, # Dùng ảnh đã resize
+                text=text, 
+                return_tensors="pt",
+                max_length=max_length, 
+                truncation=True, 
+                padding=True,
+                do_resize=True, # Báo cho processor biết cần xử lý size
+                size={"height": TARGET_SIZE[0], "width": TARGET_SIZE[1]} # Ép size chuẩn
             )
             
             input_ids.append(inputs["input_ids"].squeeze().tolist())
             
-            # Pixel Values: inputs["pixel_values"] có shape (Num_Patches, C, H, W)
-            # Ta giữ nguyên tensor này để tí nữa concat
+            # Pixel Values: Append tensor gốc (Num_Patches, C, H, W)
             pixel_values.append(inputs["pixel_values"])
             
-            # Image Sizes
+            # Image Sizes: Append list [H, W]
             if "image_sizes" in inputs:
-                # inputs["image_sizes"] là Tensor (Num_Images, 2)
-                # Convert sang list để dễ xử lý None ở bước sau
+                # inputs["image_sizes"] là Tensor (N, 2) -> tolist() ra [[h,w], [h,w]]
+                # Extend vào list tổng để tí nữa tạo tensor 1 thể
                 image_sizes.extend(inputs["image_sizes"].tolist())
             else:
-                image_sizes.append(None)
+                # Nếu model không trả về image_sizes (hiếm gặp), append None placeholder
+                # Lưu ý: Logic này có thể cần điều chỉnh tùy collator, 
+                # nhưng với LLaVA-OV thường image_sizes đi kèm số lượng ảnh.
+                # Ở đây ta giả định luôn có size nếu có ảnh.
+                pass 
 
     # 2. Padding text inputs
     batch_encoding = processor.tokenizer.pad(
@@ -378,22 +405,22 @@ def Llava_ONEVISION_process_fn(model_inputs: dict, processor, max_length=None):
         return_tensors="pt"
     )
     
-    # --- FIX 1: IMAGE SIZES (Đã làm ở bước trước) ---
+    # --- FIX OUTPUT: IMAGE SIZES ---
+    # Lọc bỏ None (từ các mẫu text-only)
     valid_image_sizes = [s for s in image_sizes if s is not None]
+    
     if len(valid_image_sizes) > 0:
-        image_sizes_tensor = torch.tensor(valid_image_sizes).long() # (Total_Images_In_Batch, 2)
+        # Tạo tensor (Total_Images, 2)
+        image_sizes_tensor = torch.tensor(valid_image_sizes).long() 
     else:
         image_sizes_tensor = None
 
-    # --- FIX 2: PIXEL VALUES (Quan trọng cho lỗi attribute 'dim') ---
-    # Lọc bỏ None
+    # --- FIX OUTPUT: PIXEL VALUES ---
     valid_pixel_values = [p for p in pixel_values if p is not None]
     
     if len(valid_pixel_values) > 0:
-        # Quan trọng: Dùng torch.cat, KHÔNG dùng torch.stack
-        # Lý do: Số lượng patches mỗi ảnh khác nhau.
-        # Đầu vào: List of [(N1, C, H, W), (N2, C, H, W), ...]
-        # Kết quả: (N1 + N2 + ..., C, H, W) -> Tensor 4D
+        # Dùng torch.cat để nối các tensor (N1, C, H, W), (N2, C, H, W)...
+        # Thành (Total_Patches, C, H, W)
         pixel_values_tensor = torch.cat(valid_pixel_values, dim=0)
     else:
         pixel_values_tensor = None
@@ -402,10 +429,9 @@ def Llava_ONEVISION_process_fn(model_inputs: dict, processor, max_length=None):
     inputs = {
         "input_ids": batch_encoding["input_ids"].long(),
         "attention_mask": batch_encoding["attention_mask"].long(),
-        "texts": texts,
-        "images": images,
-        "pixel_values": pixel_values_tensor, # Giờ là Tensor hoặc None
-        "image_sizes": image_sizes_tensor,   # Giờ là Tensor hoặc None
+        "texts": texts, # Giữ lại để debug nếu cần
+        "pixel_values": pixel_values_tensor, 
+        "image_sizes": image_sizes_tensor,   
     }
 
     return inputs
